@@ -420,7 +420,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
-      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }
 
@@ -442,7 +442,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
-      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }
 
@@ -462,7 +462,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       max_concurrent_agents: 3,
       running: %{},
       claimed: MapSet.new(),
-      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }
 
@@ -645,12 +645,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: nil,
       max_concurrent_agents: nil,
-      codex_approval_policy: nil,
-      codex_thread_sandbox: nil,
-      codex_turn_sandbox_policy: nil,
-      codex_turn_timeout_ms: nil,
-      codex_read_timeout_ms: nil,
-      codex_stall_timeout_ms: nil,
+      claude_approval_policy: nil,
+      claude_thread_sandbox: nil,
+      claude_turn_sandbox_policy: nil,
+      claude_turn_timeout_ms: nil,
+      claude_read_timeout_ms: nil,
+      claude_stall_timeout_ms: nil,
       tracker_api_token: nil,
       tracker_project_slug: nil
     )
@@ -660,9 +660,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.linear_project_slug() == nil
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert Config.max_concurrent_agents() == 10
-    assert Config.codex_command() == "codex app-server"
+    assert Config.claude_command() == "claude --output-format stream-json"
 
-    assert Config.codex_approval_policy() == %{
+    assert Config.claude_approval_policy() == %{
              "reject" => %{
                "sandbox_approval" => true,
                "rules" => true,
@@ -670,9 +670,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              }
            }
 
-    assert Config.codex_thread_sandbox() == "workspace-write"
+    assert Config.claude_thread_sandbox() == "workspace-write"
 
-    assert Config.codex_turn_sandbox_policy() == %{
+    assert Config.claude_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
              "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
              "readOnlyAccess" => %{"type" => "fullAccess"},
@@ -681,23 +681,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "excludeSlashTmp" => false
            }
 
-    assert Config.codex_turn_timeout_ms() == 3_600_000
-    assert Config.codex_read_timeout_ms() == 5_000
-    assert Config.codex_stall_timeout_ms() == 300_000
+    assert Config.claude_turn_timeout_ms() == 3_600_000
+    assert Config.claude_read_timeout_ms() == 5_000
+    assert Config.claude_stall_timeout_ms() == 300_000
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
-    assert Config.codex_command() == "codex app-server --model gpt-5.3-codex"
+    write_workflow_file!(Workflow.workflow_file_path(), claude_command: "claude --output-format stream-json --model claude-opus-4")
+    assert Config.claude_command() == "claude --output-format stream-json --model claude-opus-4"
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      codex_approval_policy: "on-request",
-      codex_thread_sandbox: "workspace-write",
-      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/workspace", "/tmp/cache"]}
+      claude_approval_policy: "on-request",
+      claude_thread_sandbox: "workspace-write",
+      claude_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["/tmp/workspace", "/tmp/cache"]}
     )
 
-    assert Config.codex_approval_policy() == "on-request"
-    assert Config.codex_thread_sandbox() == "workspace-write"
+    assert Config.claude_approval_policy() == "on-request"
+    assert Config.claude_thread_sandbox() == "workspace-write"
 
-    assert Config.codex_turn_sandbox_policy() == %{
+    assert Config.claude_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
              "writableRoots" => ["/tmp/workspace", "/tmp/cache"]
            }
@@ -708,14 +708,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: "bad")
     assert Config.max_concurrent_agents() == 10
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_turn_timeout_ms: "bad")
-    assert Config.codex_turn_timeout_ms() == 3_600_000
+    write_workflow_file!(Workflow.workflow_file_path(), claude_turn_timeout_ms: "bad")
+    assert Config.claude_turn_timeout_ms() == 3_600_000
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_read_timeout_ms: "bad")
-    assert Config.codex_read_timeout_ms() == 5_000
+    write_workflow_file!(Workflow.workflow_file_path(), claude_read_timeout_ms: "bad")
+    assert Config.claude_read_timeout_ms() == 5_000
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
-    assert Config.codex_stall_timeout_ms() == 300_000
+    write_workflow_file!(Workflow.workflow_file_path(), claude_stall_timeout_ms: "bad")
+    assert Config.claude_stall_timeout_ms() == 300_000
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},
@@ -746,9 +746,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.server_port() == nil
     assert Config.server_host() == "123"
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "")
+    write_workflow_file!(Workflow.workflow_file_path(), claude_approval_policy: "")
 
-    assert Config.codex_approval_policy() == %{
+    assert Config.claude_approval_policy() == %{
              "reject" => %{
                "sandbox_approval" => true,
                "rules" => true,
@@ -756,15 +756,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              }
            }
 
-    assert {:error, {:invalid_codex_approval_policy, ""}} = Config.validate!()
+    assert {:error, {:invalid_claude_approval_policy, ""}} = Config.validate!()
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "")
-    assert Config.codex_thread_sandbox() == "workspace-write"
-    assert {:error, {:invalid_codex_thread_sandbox, ""}} = Config.validate!()
+    write_workflow_file!(Workflow.workflow_file_path(), claude_thread_sandbox: "")
+    assert Config.claude_thread_sandbox() == "workspace-write"
+    assert {:error, {:invalid_claude_thread_sandbox, ""}} = Config.validate!()
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_turn_sandbox_policy: "bad")
+    write_workflow_file!(Workflow.workflow_file_path(), claude_turn_sandbox_policy: "bad")
 
-    assert Config.codex_turn_sandbox_policy() == %{
+    assert Config.claude_turn_sandbox_policy() == %{
              "type" => "workspaceWrite",
              "writableRoots" => [Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))],
              "readOnlyAccess" => %{"type" => "fullAccess"},
@@ -773,30 +773,30 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "excludeSlashTmp" => false
            }
 
-    assert {:error, {:invalid_codex_turn_sandbox_policy, {:unsupported_value, "bad"}}} =
+    assert {:error, {:invalid_claude_turn_sandbox_policy, {:unsupported_value, "bad"}}} =
              Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      codex_approval_policy: "future-policy",
-      codex_thread_sandbox: "future-sandbox",
-      codex_turn_sandbox_policy: %{
+      claude_approval_policy: "future-policy",
+      claude_thread_sandbox: "future-sandbox",
+      claude_turn_sandbox_policy: %{
         type: "futureSandbox",
         nested: %{flag: true}
       }
     )
 
-    assert Config.codex_approval_policy() == "future-policy"
-    assert Config.codex_thread_sandbox() == "future-sandbox"
+    assert Config.claude_approval_policy() == "future-policy"
+    assert Config.claude_thread_sandbox() == "future-sandbox"
 
-    assert Config.codex_turn_sandbox_policy() == %{
+    assert Config.claude_turn_sandbox_policy() == %{
              "type" => "futureSandbox",
              "nested" => %{"flag" => true}
            }
 
     assert :ok = Config.validate!()
 
-    write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
-    assert Config.codex_command() == "codex app-server"
+    write_workflow_file!(Workflow.workflow_file_path(), claude_command: "claude --output-format stream-json")
+    assert Config.claude_command() == "claude --output-format stream-json"
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do
@@ -804,7 +804,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
     workspace_root = Path.join("/tmp", "symphony-workspace-root")
     api_key = "resolved-secret"
-    codex_bin = Path.join(["~", "bin", "codex"])
+    claude_bin = Path.join(["~", "bin", "claude"])
 
     previous_workspace_root = System.get_env(workspace_env_var)
     previous_api_key = System.get_env(api_key_env_var)
@@ -820,12 +820,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$#{api_key_env_var}",
       workspace_root: "$#{workspace_env_var}",
-      codex_command: "#{codex_bin} app-server"
+      claude_command: "#{claude_bin} app-server"
     )
 
     assert Config.linear_api_token() == api_key
     assert Config.workspace_root() == Path.expand(workspace_root)
-    assert Config.codex_command() == "#{codex_bin} app-server"
+    assert Config.claude_command() == "#{claude_bin} app-server"
   end
 
   test "config no longer resolves legacy env: references" do
@@ -877,7 +877,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "workflow prompt is used when building base prompt" do
-    workflow_prompt = "Workflow prompt body used as codex instruction."
+    workflow_prompt = "Workflow prompt body used as claude instruction."
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt

@@ -1,13 +1,13 @@
-# Codex Token Accounting
+# Claude Code Token Accounting
 
-This document explains how Codex reports token usage through the app-server protocol and how Symphony should account for it.
+This document explains how Claude Code reports token usage through the CLI stream-json protocol and how Symphony should account for it.
 
-It is based on the current Codex source in `codex-rs`, especially:
+It is based on the current Claude Code source in `claude-code`, especially:
 
-- `app-server/README.md`
+- `cli/README.md`
 - `protocol/src/protocol.rs`
-- `app-server/src/bespoke_event_handling.rs`
-- `app-server-protocol/src/protocol/v2.rs`
+- `cli/src/bespoke_event_handling.rs`
+- `cli-protocol/src/protocol/v2.rs`
 - `exec/src/event_processor_with_jsonl_output.rs`
 - `state/src/extract.rs`
 
@@ -21,7 +21,7 @@ It is based on the current Codex source in `codex-rs`, especially:
 
 ## Primary Source Semantics
 
-Codex defines `TokenUsageInfo` like this:
+Claude Code defines `TokenUsageInfo` like this:
 
 ```rust
 pub struct TokenUsageInfo {
@@ -45,13 +45,13 @@ That gives the core semantics:
 - `last_token_usage`: the newest chunk of usage that was just added
 - `total_token_usage`: the accumulated total after adding that chunk
 
-This is the most important accounting rule in the Codex source.
+This is the most important accounting rule in the Claude Code source.
 
 ## Event Types
 
-### `codex/event/token_count`
+### `claude/event/token_count`
 
-Codex core emits token count events containing `TokenUsageInfo`.
+Claude Code core emits token count events containing `TokenUsageInfo`.
 
 These events can carry:
 
@@ -59,7 +59,7 @@ These events can carry:
 - `info.last_token_usage`
 - `info.model_context_window`
 
-Symphony sees these events wrapped inside the app-server message stream.
+Symphony sees these events wrapped inside the CLI stream-json message stream.
 
 Meaning:
 
@@ -68,7 +68,7 @@ Meaning:
 
 ### `thread/tokenUsage/updated`
 
-The app-server converts token count events into a dedicated thread-scoped notification:
+The CLI converts token count events into a dedicated thread-scoped notification:
 
 ```rust
 let notification = ThreadTokenUsageUpdatedNotification {
@@ -108,15 +108,15 @@ Meaning:
 - `tokenUsage.total` is an absolute thread total
 - `tokenUsage.last` is the latest increment that produced that total
 
-The app-server README is explicit: token usage streams separately via `thread/tokenUsage/updated`.
+The CLI README is explicit: token usage streams separately via `thread/tokenUsage/updated`.
 
 ### `turn/completed`
 
-The app-server README says `turn/completed` carries final turn state and token usage.
+The CLI README says `turn/completed` carries final turn state and token usage.
 
 There are two important details:
 
-1. The app-server protocol `turn/completed` notification contains a final `turn` object.
+1. The CLI protocol `turn/completed` notification contains a final `turn` object.
 2. The `exec` event processor also emits a turn-completed event that includes a `usage` struct.
 
 In the `exec` event processor, the turn-completed usage is built from the most recent captured `total_token_usage`:
@@ -147,7 +147,7 @@ Important consequence:
 
 ### Generic `usage`
 
-Codex uses the word `usage` in multiple places.
+Claude Code uses the word `usage` in multiple places.
 
 That does not mean all `usage` maps have the same semantics.
 
@@ -193,7 +193,7 @@ Use these only when:
 
 `model_context_window` is not spend. It is the model's context limit.
 
-Codex also has logic that can "fill to context window", which sets:
+Claude Code also has logic that can "fill to context window", which sets:
 
 - `total_token_usage.total_tokens = context_window`
 - `last_token_usage.total_tokens = delta`
@@ -204,7 +204,7 @@ For Symphony, `model_context_window` should be displayed or logged separately fr
 
 ## Recommended Accounting Strategy For Symphony
 
-Track usage per active Codex thread.
+Track usage per active Claude Code thread.
 
 For each thread, keep:
 
@@ -253,7 +253,7 @@ If you misclassify a per-turn `usage` payload as an absolute thread total, later
 - Prefer `thread/tokenUsage/updated` for live reporting.
 - Treat `tokenUsage.total` as authoritative for thread totals.
 - Key accounting by `thread_id`, not just issue id.
-- Expect one thread to span multiple turns when Symphony reuses a live Codex thread.
+- Expect one thread to span multiple turns when Symphony reuses a live Claude Code thread.
 
 ### Do not
 
@@ -264,9 +264,9 @@ If you misclassify a per-turn `usage` payload as an absolute thread total, later
 
 ## Practical Interpretation For Symphony Logs
 
-When reading raw app-server events:
+When reading raw CLI stream-json events:
 
-- `codex/event/token_count`
+- `claude/event/token_count`
   - useful if you are inspecting nested `info.total_token_usage`
 - `thread/tokenUsage/updated`
   - best source for live dashboard and API totals
@@ -275,7 +275,7 @@ When reading raw app-server events:
 
 ## Why `total_token_usage` Is The Durable Choice
 
-Codex itself consistently prefers cumulative totals when it needs durable state:
+Claude Code itself consistently prefers cumulative totals when it needs durable state:
 
 - the state extractor stores `info.total_token_usage.total_tokens`
 - the exec event processor caches the last `total_token_usage` and uses that on turn completion
@@ -289,7 +289,7 @@ That is a strong signal for Symphony:
 
 If Symphony documents token reporting externally, the contract should be:
 
-- Live token totals come from Codex thread-scoped cumulative usage.
+- Live token totals come from Claude Code thread-scoped cumulative usage.
 - Incremental usage may also be emitted, but Symphony does not use it for totals.
 - Turn-completed usage is event-specific and should not be assumed to be a fresh additive increment.
 - Reporting is thread-based, and multiple turns can occur on one thread.
