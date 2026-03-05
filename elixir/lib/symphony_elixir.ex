@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Application do
 
   @impl true
   def start(_type, _args) do
+    :logger.set_primary_config(:level, :debug)
     :ok = SymphonyElixir.LogFile.configure()
 
     children = [

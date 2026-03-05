@@ -144,7 +144,10 @@ defmodule SymphonyElixir.Claude.Cli do
     if is_nil(executable) do
       {:error, {:claude_cli_not_found, command}}
     else
-      args = build_cli_args(resume_session_id)
+      args = build_cli_args(prompt, resume_session_id)
+
+      expanded_workspace = Path.expand(workspace)
+      Logger.debug("Claude CLI starting: #{executable} #{Enum.join(args, " ")} (cwd=#{expanded_workspace})")
 
       port =
         Port.open(
@@ -154,21 +157,17 @@ defmodule SymphonyElixir.Claude.Cli do
             :exit_status,
             :stderr_to_stdout,
             args: Enum.map(args, &String.to_charlist/1),
-            cd: String.to_charlist(Path.expand(workspace)),
+            cd: String.to_charlist(expanded_workspace),
             line: @port_line_bytes
           ]
         )
-
-      # Send the prompt via stdin then close the write side.
-      Port.command(port, prompt)
-      Port.command(port, <<4>>)
 
       {:ok, port}
     end
   end
 
-  defp build_cli_args(resume_session_id) do
-    args = ["-p", "--output-format", Config.claude_output_format()]
+  defp build_cli_args(prompt, resume_session_id) do
+    args = ["--output-format", Config.claude_output_format()]
 
     args = maybe_append(args, "--model", Config.claude_model())
     args = maybe_append(args, "--max-turns", to_string_or_nil(Config.claude_max_turns()))
@@ -202,7 +201,10 @@ defmodule SymphonyElixir.Claude.Cli do
         args
       end
 
-    args
+    # Pass the prompt as a -p argument rather than via stdin.
+    # Sending <<4>> (Ctrl-D) to a pipe doesn't signal EOF to the subprocess,
+    # so Claude would hang waiting for more input if we used stdin.
+    args ++ ["-p", prompt]
   end
 
   defp maybe_append(args, _flag, nil), do: args
@@ -229,6 +231,7 @@ defmodule SymphonyElixir.Claude.Cli do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending <> to_string(chunk)
+        Logger.debug("Claude CLI stream line: #{String.slice(complete_line, 0, 500)}")
 
         case handle_stream_line(complete_line, port, on_message, metadata) do
           {:continue, _updated_metadata} ->
@@ -244,6 +247,7 @@ defmodule SymphonyElixir.Claude.Cli do
         end
 
       {^port, {:data, {:noeol, chunk}}} ->
+        Logger.debug("Claude CLI stream partial chunk (#{byte_size(chunk)} bytes, pending=#{byte_size(pending)} bytes)")
         receive_loop(
           port,
           on_message,
@@ -255,13 +259,16 @@ defmodule SymphonyElixir.Claude.Cli do
         )
 
       {^port, {:exit_status, 0}} ->
+        Logger.info("Claude CLI port exited normally (status=0)")
         # Normal exit without a result event — treat as success.
         {:ok, %{}}
 
       {^port, {:exit_status, status}} ->
+        Logger.warning("Claude CLI port exited with status=#{status}")
         {:error, {:port_exit, status}}
     after
       timeout ->
+        Logger.warning("Claude CLI stream timed out after #{timeout}ms (stall_timeout=#{stall_timeout}, turn_timeout=#{turn_timeout})")
         stop_port(port)
         {:error, :turn_timeout}
     end
