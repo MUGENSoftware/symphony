@@ -278,9 +278,12 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "http server serves html and json endpoints end-to-end" do
+    previous_log_file = Application.get_env(:symphony_elixir, :log_file)
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     orchestrator_name = Module.concat(__MODULE__, :HttpOrchestrator)
     server_name = Module.concat(__MODULE__, :HttpServer)
+    log_root = Path.join(System.tmp_dir!(), "symphony-http-logs-#{System.unique_integer([:positive])}")
+    Application.put_env(:symphony_elixir, :log_file, Path.join(log_root, "log/symphony.log"))
     {:ok, orchestrator_pid} = Orchestrator.start_link(name: orchestrator_name)
 
     {:ok, server_pid} =
@@ -295,6 +298,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     on_exit(fn ->
       if Process.alive?(server_pid), do: Process.exit(server_pid, :normal)
       if Process.alive?(orchestrator_pid), do: Process.exit(orchestrator_pid, :normal)
+
+      if previous_log_file do
+        Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+      else
+        Application.delete_env(:symphony_elixir, :log_file)
+      end
+
+      File.rm_rf(log_root)
     end)
 
     running_entry = %{
@@ -313,6 +324,10 @@ defmodule SymphonyElixir.ExtensionsTest do
       claude_total_tokens: 12,
       started_at: DateTime.utc_now()
     }
+
+    {:ok, log_ref} = SymphonyElixir.Claude.SessionLog.begin_turn("MT-HTTP")
+    File.write!(log_ref.pending_path, ~s({"type":"result","session_id":"thread-http","usage":{"input_tokens":4,"output_tokens":8}}) <> "\n")
+    assert {:ok, _final_path} = SymphonyElixir.Claude.SessionLog.finish_turn(log_ref, "thread-http")
 
     :sys.replace_state(orchestrator_pid, fn state ->
       %{
@@ -356,10 +371,22 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{
              "issue_identifier" => "MT-HTTP",
+             "logs" => %{
+               "claude_session_logs" => [
+                 %{
+                   "path" => _path,
+                   "session_id" => "thread-http",
+                   "tail" => tail
+                 }
+                 | _
+               ]
+             },
              "status" => "running",
              "running" => %{"last_message" => "structured", "turn_count" => 7},
              "retry" => nil
            } = Jason.decode!(body)
+
+    assert tail =~ ~s("session_id":"thread-http")
 
     {status, _headers, body} = http_request(port, "GET", "/api/v1/MT-RETRY")
     assert status == 200

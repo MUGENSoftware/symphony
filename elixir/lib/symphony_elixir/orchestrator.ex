@@ -108,10 +108,7 @@ defmodule SymphonyElixir.Orchestrator do
 
               state
               |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation
-              })
+              |> schedule_issue_retry(issue_id, 1, continuation_retry_metadata(running_entry))
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -563,10 +560,13 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil),
+    do: dispatch_issue(state, issue, attempt, %{})
+
+  defp dispatch_issue(%State{} = state, issue, attempt, metadata) when is_map(metadata) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt)
+        do_dispatch_issue(state, refreshed_issue, attempt, metadata)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -583,16 +583,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, metadata) do
     recipient = self()
+    resume_session_id = Map.get(metadata, :resume_session_id)
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt)
+           AgentRunner.run(issue, recipient, attempt: attempt, resume_session_id: resume_session_id)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
+        Logger.info(
+          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}" <>
+            if(is_binary(resume_session_id), do: " resume_session_id=#{resume_session_id}", else: "")
+        )
 
         running =
           Map.put(state.running, issue.id, %{
@@ -600,7 +604,7 @@ defmodule SymphonyElixir.Orchestrator do
             ref: ref,
             identifier: issue.identifier,
             issue: issue,
-            session_id: nil,
+            session_id: resume_session_id,
             last_claude_message: nil,
             last_claude_timestamp: nil,
             last_claude_event: nil,
@@ -629,7 +633,8 @@ defmodule SymphonyElixir.Orchestrator do
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
-          error: "failed to spawn agent: #{inspect(reason)}"
+          error: "failed to spawn agent: #{inspect(reason)}",
+          resume_session_id: resume_session_id
         })
     end
   end
@@ -690,7 +695,8 @@ defmodule SymphonyElixir.Orchestrator do
             timer_ref: timer_ref,
             due_at_ms: due_at_ms,
             identifier: identifier,
-            error: error
+            error: error,
+            resume_session_id: Map.get(metadata, :resume_session_id)
           })
     }
   end
@@ -700,7 +706,8 @@ defmodule SymphonyElixir.Orchestrator do
       %{attempt: attempt} = retry_entry ->
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
-          error: Map.get(retry_entry, :error)
+          error: Map.get(retry_entry, :error),
+          resume_session_id: Map.get(retry_entry, :resume_session_id)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -786,7 +793,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt)}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -859,6 +866,45 @@ defmodule SymphonyElixir.Orchestrator do
     do: session_id
 
   defp running_entry_session_id(_running_entry), do: "n/a"
+
+  defp continuation_retry_metadata(running_entry) do
+    metadata = %{
+      identifier: running_entry.identifier,
+      delay_type: :continuation,
+      resume_session_id: Map.get(running_entry, :session_id)
+    }
+
+    case Map.get(running_entry, :last_claude_event) do
+      :max_turns_exhausted ->
+        Map.put(
+          metadata,
+          :error,
+          max_turns_retry_message(
+            Map.get(running_entry, :session_id),
+            Map.get(running_entry, :last_claude_message)
+          )
+        )
+
+      _ ->
+        metadata
+    end
+  end
+
+  defp max_turns_retry_message(session_id, %{message: message}) when is_binary(message) do
+    if is_binary(session_id) and session_id != "" do
+      "#{message} Auto-resume scheduled for session #{session_id}."
+    else
+      message
+    end
+  end
+
+  defp max_turns_retry_message(session_id, _message) when is_binary(session_id) and session_id != "" do
+    "Claude reached its max-turn limit. Auto-resume scheduled for session #{session_id}."
+  end
+
+  defp max_turns_retry_message(_session_id, _message) do
+    "Claude reached its max-turn limit. Auto-resume scheduled."
+  end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
@@ -1042,7 +1088,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp summarize_claude_update(update) do
     %{
       event: update[:event],
-      message: update[:payload] || update[:raw],
+      message: update[:message] || update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
   end

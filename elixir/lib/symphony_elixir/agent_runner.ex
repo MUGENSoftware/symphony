@@ -49,8 +49,9 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_claude_turns(workspace, issue, claude_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.agent_max_turns())
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    resume_session_id = Keyword.get(opts, :resume_session_id)
 
-    session = %{session_id: nil, workspace: Path.expand(workspace)}
+    session = %{session_id: resume_session_id, workspace: Path.expand(workspace)}
     do_run_claude_turns(session, workspace, issue, claude_update_recipient, opts, issue_state_fetcher, 1, max_turns)
   end
 
@@ -64,7 +65,7 @@ defmodule SymphonyElixir.AgentRunner do
              issue,
              on_message: claude_message_handler(claude_update_recipient, issue)
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_result[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_result[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns} result=#{turn_result[:result]}")
 
       # Update session with new session_id for continuation
       next_session = Map.get(turn_result, :session, session)

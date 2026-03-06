@@ -9,6 +9,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
     try do
+      previous_log_file = Application.get_env(:symphony_elixir, :log_file)
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-100")
       claude_binary = Path.join(test_root, "fake-claude")
@@ -21,9 +22,16 @@ defmodule SymphonyElixir.AppServerTest do
         else
           System.delete_env("SYMP_TEST_CLAUDE_TRACE")
         end
+
+        if previous_log_file do
+          Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+        else
+          Application.delete_env(:symphony_elixir, :log_file)
+        end
       end)
 
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
       File.mkdir_p!(workspace)
 
       File.write!(claude_binary, """
@@ -51,13 +59,195 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:ok, %{session_id: "session-100"}} = AppServer.run(workspace, "hello", issue)
+      log =
+        capture_log(fn ->
+          assert {:ok, %{session_id: "session-100"}} = AppServer.run(workspace, "hello", issue)
+        end)
 
       trace = File.read!(trace_file)
       assert String.contains?(trace, "--model claude-sonnet-4")
       assert String.contains?(trace, "--output-format stream-json")
       assert String.contains?(trace, "--verbose")
       assert String.contains?(trace, "-p hello")
+      assert log =~ ~s([STREAM_JSON] {"type":"result","session_id":"session-100")
+
+      logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-100")
+      assert Enum.any?(logs, &String.ends_with?(&1.path, "latest.log"))
+      assert Enum.any?(logs, &(&1.session_id == "session-100"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "stream-json wrapper persists raw log output even when no JSON event is parseable" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-raw-log-timeout-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-101")
+      claude_binary = Path.join(test_root, "fake-claude")
+      File.mkdir_p!(workspace)
+
+      on_exit(fn ->
+        if previous_log_file do
+          Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+        else
+          Application.delete_env(:symphony_elixir, :log_file)
+        end
+      end)
+
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      printf '%s\\n' 'booting stream-json session'
+      exit 0
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-stream-timeout",
+        identifier: "MT-101",
+        title: "Persist timeout stream log",
+        description: "Ensure raw output is durable on timeout",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-101",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{}} = AppServer.run(workspace, "hello", issue)
+
+      logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-101")
+      assert length(logs) >= 1
+      assert Enum.any?(logs, &String.contains?(&1.tail, "booting stream-json session"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "stream-json wrapper persists stderr and malformed lines in the raw log file" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-raw-log-malformed-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-102")
+      claude_binary = Path.join(test_root, "fake-claude")
+      File.mkdir_p!(workspace)
+
+      on_exit(fn ->
+        if previous_log_file do
+          Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+        else
+          Application.delete_env(:symphony_elixir, :log_file)
+        end
+      end)
+
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      printf '%s\\n' 'warning: stderr noise' >&2
+      printf '%s\\n' 'not-json'
+      printf '%s\\n' '{"type":"result","session_id":"session-102","usage":{"input_tokens":1,"output_tokens":2}}'
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-stream-malformed",
+        identifier: "MT-102",
+        title: "Persist malformed output",
+        description: "Ensure stderr and malformed lines are preserved",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-102",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "session-102"}} = AppServer.run(workspace, "hello", issue)
+
+      logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-102")
+
+      assert Enum.any?(logs, fn log ->
+               String.contains?(log.tail, "warning: stderr noise") and
+                 String.contains?(log.tail, "not-json") and
+                 String.contains?(log.tail, ~s("session_id":"session-102"))
+             end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "stream-json surfaces max-turn exhaustion with resumable session context" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-max-turns-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-103")
+      claude_binary = Path.join(test_root, "fake-claude")
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      printf '%s\\n' '{"type":"result","subtype":"error_max_turns","session_id":"session-103","stop_reason":"tool_use","num_turns":11,"usage":{"input_tokens":1,"output_tokens":2}}'
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-stream-max-turns",
+        identifier: "MT-103",
+        title: "Resume after max turns",
+        description: "Ensure the runner exposes resumable max-turn metadata",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-103",
+        labels: ["backend"]
+      }
+
+      on_message = fn message -> send(self(), {:stream_json_message, message}) end
+
+      assert {:ok, %{result: :max_turns_exhausted, session_id: "session-103", resume_session_id: "session-103"}} =
+               AppServer.run(workspace, "hello", issue, on_message: on_message)
+
+      assert_received {:stream_json_message,
+                       %{
+                         event: :max_turns_exhausted,
+                         session_id: "session-103",
+                         resume_session_id: "session-103",
+                         message: message
+                       }}
+
+      assert message =~ "max-turn limit"
+      assert message =~ "Resume with session session-103"
     after
       File.rm_rf(test_root)
     end

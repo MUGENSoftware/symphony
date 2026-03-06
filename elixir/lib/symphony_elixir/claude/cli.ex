@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Claude.Cli do
   require Logger
   alias SymphonyElixir.Config
   alias SymphonyElixir.Claude.DynamicTool
+  alias SymphonyElixir.Claude.SessionLog
 
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
@@ -57,14 +58,14 @@ defmodule SymphonyElixir.Claude.Cli do
 
     start_result =
       if is_port(starting_port) and starting_mode == :app_server do
-        {:ok, starting_port, :app_server}
+        {:ok, %{port: starting_port, mode: :app_server}}
       else
-        start_cli(workspace, prompt, prev_session_id)
+        start_cli(workspace, prompt, prev_session_id, issue)
       end
 
     case start_result do
-      {:ok, port, mode} ->
-        metadata = port_metadata(port)
+      {:ok, %{mode: mode} = command} ->
+        metadata = command_metadata(command)
 
         if mode == :stream_json do
           emit_message(
@@ -84,7 +85,7 @@ defmodule SymphonyElixir.Claude.Cli do
           case mode do
             :app_server ->
               execute_app_server_turn(
-                port,
+                command.port,
                 workspace,
                 prompt,
                 thread_id || prev_session_id,
@@ -94,17 +95,17 @@ defmodule SymphonyElixir.Claude.Cli do
               )
 
             :stream_json ->
-              receive_stream(port, on_message, metadata)
+              execute_stream_json_turn(command, on_message, metadata, issue)
           end
 
         case result do
           {:ok, result} ->
             session_id = Map.get(result, :session_id, prev_session_id)
             next_thread_id = Map.get(result, :thread_id, thread_id)
+            turn_result = Map.get(result, :result, :turn_completed)
+            completion_log_message = completion_log_message(turn_result, issue, session_id)
 
-            Logger.info(
-              "Claude CLI turn completed for #{issue_context(issue)} session_id=#{session_id}"
-            )
+            Logger.info(completion_log_message)
 
             session =
               case mode do
@@ -113,7 +114,7 @@ defmodule SymphonyElixir.Claude.Cli do
                     session_id: session_id,
                     workspace: workspace,
                     mode: :app_server,
-                    port: port,
+                    port: command.port,
                     thread_id: next_thread_id
                   }
 
@@ -123,16 +124,15 @@ defmodule SymphonyElixir.Claude.Cli do
 
             {:ok,
              %{
-               result: :turn_completed,
+               result: turn_result,
                session_id: session_id,
                session: session,
-               usage: Map.get(result, :usage)
+               usage: Map.get(result, :usage),
+               resume_session_id: Map.get(result, :resume_session_id, session_id)
              }}
 
           {:error, reason} ->
-            Logger.warning(
-              "Claude CLI turn ended with error for #{issue_context(issue)}: #{inspect(reason)}"
-            )
+            Logger.warning("Claude CLI turn ended with error for #{issue_context(issue)}: #{inspect(reason)}")
 
             emit_message(
               on_message,
@@ -178,8 +178,7 @@ defmodule SymphonyElixir.Claude.Cli do
         {:error, {:invalid_workspace_cwd, :workspace_root, workspace_path}}
 
       not String.starts_with?(workspace_path <> "/", root_prefix) ->
-        {:error,
-         {:invalid_workspace_cwd, :outside_workspace_root, workspace_path, workspace_root}}
+        {:error, {:invalid_workspace_cwd, :outside_workspace_root, workspace_path, workspace_root}}
 
       true ->
         :ok
@@ -188,7 +187,7 @@ defmodule SymphonyElixir.Claude.Cli do
 
   # ── CLI subprocess ─────────────────────────────────────────────────────
 
-  defp start_cli(workspace, prompt, resume_session_id) do
+  defp start_cli(workspace, prompt, resume_session_id, issue) do
     command = Config.claude_command() |> to_string() |> String.trim()
 
     with {:ok, executable_name, base_args} <- parse_command(command),
@@ -198,24 +197,37 @@ defmodule SymphonyElixir.Claude.Cli do
 
       expanded_workspace = Path.expand(workspace)
 
-      Logger.debug(
-        "Claude CLI starting: #{executable} #{Enum.join(redact_prompt_arg(args), " ")} (cwd=#{expanded_workspace})"
-      )
+      Logger.debug("Claude CLI starting: #{executable} #{Enum.join(redact_prompt_arg(args), " ")} (cwd=#{expanded_workspace})")
 
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: Enum.map(args, &String.to_charlist/1),
-            cd: String.to_charlist(expanded_workspace),
-            line: @port_line_bytes
-          ]
-        )
+      case mode do
+        :app_server ->
+          port =
+            Port.open(
+              {:spawn_executable, String.to_charlist(executable)},
+              [
+                :binary,
+                :exit_status,
+                :stderr_to_stdout,
+                args: Enum.map(args, &String.to_charlist/1),
+                cd: String.to_charlist(expanded_workspace),
+                line: @port_line_bytes
+              ]
+            )
 
-      {:ok, port, mode}
+          {:ok, %{port: port, mode: :app_server}}
+
+        :stream_json ->
+          with {:ok, log_ref} <- SessionLog.begin_turn(issue.identifier) do
+            {:ok,
+             %{
+               executable: executable,
+               args: args,
+               workspace: expanded_workspace,
+               mode: :stream_json,
+               log_ref: log_ref
+             }}
+          end
+      end
     else
       nil ->
         {:error, {:claude_cli_not_found, command}}
@@ -365,12 +377,49 @@ defmodule SymphonyElixir.Claude.Cli do
 
   # ── Stream parsing ─────────────────────────────────────────────────────
 
-  defp receive_stream(port, on_message, metadata) do
-    turn_timeout = Config.claude_turn_timeout_ms()
-    stall_timeout = Config.claude_stall_timeout_ms()
-    effective_timeout = min(turn_timeout, stall_timeout)
+  defp execute_stream_json_turn(command, on_message, metadata, _issue) do
+    timeout = min(Config.claude_turn_timeout_ms(), Config.claude_stall_timeout_ms())
+    wrapper = stream_wrapper_path()
+    log_path = command.log_ref.pending_path
 
-    receive_loop(port, on_message, metadata, effective_timeout, turn_timeout, now_ms(), "")
+    task =
+      Task.async(fn ->
+        System.cmd(
+          "/bin/bash",
+          [wrapper, log_path, command.executable | command.args],
+          cd: command.workspace,
+          stderr_to_stdout: true
+        )
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {_output, status}} ->
+        parsed_result = parse_stream_output(read_stream_log(command.log_ref.pending_path), on_message, metadata)
+        finalize_stream_json_log(command.log_ref, parsed_result)
+
+        case parsed_result do
+          {:ok, result} ->
+            {:ok, result}
+
+          :continue when status == 0 ->
+            Logger.info("Claude CLI port exited normally (status=0)")
+            {:ok, %{}}
+
+          :continue ->
+            Logger.warning("Claude CLI port exited with status=#{status}")
+            {:error, {:port_exit, status}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      nil ->
+        Logger.warning("Claude CLI stream timed out after #{timeout}ms (stall_timeout=#{Config.claude_stall_timeout_ms()}, turn_timeout=#{Config.claude_turn_timeout_ms()})")
+
+        parse_stream_output(read_stream_log(command.log_ref.pending_path), on_message, metadata)
+        finalize_stream_json_log(command.log_ref, :continue)
+        {:error, :turn_timeout}
+    end
   end
 
   defp execute_app_server_turn(
@@ -511,59 +560,8 @@ defmodule SymphonyElixir.Claude.Cli do
         {:error, {:port_exit, status}}
     after
       timeout ->
-        Logger.warning(
-          "Claude app-server timed out after #{timeout}ms (stall_timeout=#{stall_timeout}, turn_timeout=#{turn_timeout})"
-        )
+        Logger.warning("Claude app-server timed out after #{timeout}ms (stall_timeout=#{stall_timeout}, turn_timeout=#{turn_timeout})")
 
-        stop_port(port)
-        {:error, :turn_timeout}
-    end
-  end
-
-  defp receive_loop(port, on_message, metadata, stall_timeout, turn_timeout, start_ms, pending) do
-    timeout = remaining_timeout(stall_timeout, turn_timeout, start_ms)
-
-    receive do
-      {^port, {:data, {:eol, chunk}}} ->
-        complete_line = pending <> to_string(chunk)
-        Logger.debug("Claude CLI stream line: #{String.slice(complete_line, 0, 500)}")
-
-        case handle_stream_line(complete_line, on_message, metadata) do
-          {:continue, _updated_metadata} ->
-            receive_loop(port, on_message, metadata, stall_timeout, turn_timeout, start_ms, "")
-
-          {:done, result} ->
-            drain_port(port)
-            {:ok, result}
-
-          {:error, reason} ->
-            drain_port(port)
-            {:error, reason}
-        end
-
-      {^port, {:data, {:noeol, chunk}}} ->
-        Logger.debug("Claude CLI stream partial chunk (#{byte_size(chunk)} bytes, pending=#{byte_size(pending)} bytes)")
-        receive_loop(
-          port,
-          on_message,
-          metadata,
-          stall_timeout,
-          turn_timeout,
-          start_ms,
-          pending <> to_string(chunk)
-        )
-
-      {^port, {:exit_status, 0}} ->
-        Logger.info("Claude CLI port exited normally (status=0)")
-        # Normal exit without a result event — treat as success.
-        {:ok, %{}}
-
-      {^port, {:exit_status, status}} ->
-        Logger.warning("Claude CLI port exited with status=#{status}")
-        {:error, {:port_exit, status}}
-    after
-      timeout ->
-        Logger.warning("Claude CLI stream timed out after #{timeout}ms (stall_timeout=#{stall_timeout}, turn_timeout=#{turn_timeout})")
         stop_port(port)
         {:error, :turn_timeout}
     end
@@ -577,10 +575,82 @@ defmodule SymphonyElixir.Claude.Cli do
 
   defp now_ms, do: System.monotonic_time(:millisecond)
 
+  defp parse_stream_output(output, on_message, metadata) when is_binary(output) do
+    output
+    |> sanitize_stream_output()
+    |> String.split("\n", trim: true)
+    |> Enum.reduce_while(:continue, fn line, _acc ->
+      case handle_stream_line(line, on_message, metadata) do
+        {:continue, _updated_metadata} -> {:cont, :continue}
+        {:done, result} -> {:halt, {:ok, result}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp read_stream_log(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, contents} -> contents
+      {:error, _reason} -> ""
+    end
+  end
+
+  defp sanitize_stream_output(output) when is_binary(output) do
+    output
+    |> String.replace(~r/\e\][^\a]*(?:\a|\e\\)/u, "")
+    |> String.replace(~r/\e\[[0-9;?]*[ -\/]*[@-~]/u, "")
+    |> strip_non_printable_controls()
+  end
+
+  defp strip_non_printable_controls(output) when is_binary(output) do
+    output
+    |> String.to_charlist()
+    |> Enum.filter(fn char ->
+      char in [?\n, ?\r, ?\t] or char >= 32
+    end)
+    |> to_string()
+  end
+
   # ── Event handling ─────────────────────────────────────────────────────
 
   defp handle_stream_line(line, on_message, metadata) do
+    append_stream_log(line)
+
     case Jason.decode(line) do
+      {:ok, %{"type" => "result", "subtype" => "error_max_turns"} = payload} ->
+        session_id = get_in(payload, ["session_id"])
+        usage = get_in(payload, ["usage"])
+        stop_reason = get_in(payload, ["stop_reason"])
+        num_turns = get_in(payload, ["num_turns"])
+
+        message =
+          max_turns_exhausted_message(session_id, stop_reason, num_turns)
+
+        result_metadata = maybe_set_usage(metadata, payload)
+
+        emit_message(
+          on_message,
+          :max_turns_exhausted,
+          %{
+            payload: payload,
+            raw: line,
+            message: message,
+            session_id: session_id,
+            stop_reason: stop_reason,
+            num_turns: num_turns,
+            resume_session_id: session_id
+          },
+          result_metadata
+        )
+
+        {:done,
+         %{
+           session_id: session_id,
+           usage: usage,
+           result: :max_turns_exhausted,
+           resume_session_id: session_id
+         }}
+
       {:ok, %{"type" => "result"} = payload} ->
         session_id = get_in(payload, ["session_id"])
         usage = get_in(payload, ["usage"])
@@ -686,6 +756,7 @@ defmodule SymphonyElixir.Claude.Cli do
     case Jason.decode(line) do
       {:ok, %{"method" => "turn/completed"} = payload} ->
         emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+
         {:done,
          %{
            session_id: build_app_server_session_id(state),
@@ -864,6 +935,12 @@ defmodule SymphonyElixir.Claude.Cli do
     not Enum.member?(supported, tool_name)
   end
 
+  defp command_metadata(%{mode: :app_server, port: port}), do: port_metadata(port)
+
+  defp command_metadata(%{mode: :stream_json, log_ref: log_ref}) do
+    %{claude_session_log_path: log_ref.pending_path}
+  end
+
   defp port_metadata(port) when is_port(port) do
     case :erlang.port_info(port, :os_pid) do
       {:os_pid, os_pid} -> %{claude_cli_pid: to_string(os_pid)}
@@ -899,6 +976,39 @@ defmodule SymphonyElixir.Claude.Cli do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
+  defp completion_log_message(:max_turns_exhausted, issue, session_id) do
+    "Claude CLI turn reached max turns for #{issue_context(issue)} session_id=#{session_id}; ready to resume"
+  end
+
+  defp completion_log_message(_turn_result, issue, session_id) do
+    "Claude CLI turn completed for #{issue_context(issue)} session_id=#{session_id}"
+  end
+
+  defp max_turns_exhausted_message(session_id, stop_reason, num_turns) do
+    turns =
+      if is_integer(num_turns) do
+        " after #{num_turns} turns"
+      else
+        ""
+      end
+
+    stop_reason_suffix =
+      if is_binary(stop_reason) and stop_reason != "" do
+        " (last stop reason: #{stop_reason})"
+      else
+        ""
+      end
+
+    session_suffix =
+      if is_binary(session_id) and session_id != "" do
+        " Resume with session #{session_id}."
+      else
+        ""
+      end
+
+    "Claude reached its max-turn limit#{turns}#{stop_reason_suffix}.#{session_suffix}"
+  end
+
   defp log_non_json_stream_line(data) do
     text =
       data
@@ -922,6 +1032,30 @@ defmodule SymphonyElixir.Claude.Cli do
     after
       5_000 -> stop_port(port)
     end
+  end
+
+  defp append_stream_log(line) do
+    Logger.info("[STREAM_JSON] #{line}")
+  end
+
+  defp finalize_stream_json_log(log_ref, parsed_result) do
+    session_id =
+      case parsed_result do
+        {:ok, %{session_id: session_id}} -> session_id
+        _ -> nil
+      end
+
+    case SessionLog.finish_turn(log_ref, session_id) do
+      {:ok, _path} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to finalize Claude session log: #{inspect(reason)}")
+    end
+  end
+
+  defp stream_wrapper_path do
+    Path.expand("../../../scripts/claude_stream_wrapper.sh", __DIR__)
   end
 
   defp stop_port(port) when is_port(port) do

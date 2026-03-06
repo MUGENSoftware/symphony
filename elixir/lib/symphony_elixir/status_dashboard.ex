@@ -601,6 +601,7 @@ defmodule SymphonyElixir.StatusDashboard do
         :none -> @ansi_red
         "claude/event/token_count" -> @ansi_yellow
         "claude/event/task_started" -> @ansi_green
+        :max_turns_exhausted -> @ansi_orange
         "turn_completed" -> @ansi_magenta
         _ -> @ansi_blue
       end
@@ -1142,6 +1143,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp humanize_claude_event(:turn_ended_with_error, message, _payload), do: "turn ended with error: #{format_reason(message)}"
   defp humanize_claude_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
   defp humanize_claude_event(:turn_failed, _message, payload), do: humanize_claude_method("turn/failed", payload)
+  defp humanize_claude_event(:max_turns_exhausted, message, _payload), do: format_reason(message)
   defp humanize_claude_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
   defp humanize_claude_event(:malformed, _message, _payload), do: "malformed JSON event from claude"
   defp humanize_claude_event(_event, _message, _payload), do: nil

@@ -14,7 +14,7 @@ tracker:
     - Duplicate
     - Done
 polling:
-  interval_ms: 5000
+  interval_ms: 8000
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
@@ -27,13 +27,13 @@ hooks:
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
   max_concurrent_agents: 10
-  max_turns: 20
+  max_turns: 10
 claude:
   command: path/to/exec.sh
   model: opus
   output_format: stream-json
   dangerously_skip_permissions: true
-  max_turns: 20
+  max_turns: 10
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -43,9 +43,9 @@ Continuation context:
 
 - This is retry attempt #{{ attempt }} because the ticket is still in an active state.
 - Resume from the current workspace state instead of restarting from scratch.
-- Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
-  {% endif %}
+- Avoid redoing completed investigation or validation unless required by new changes.
+- Do not end while the issue remains active unless blocked by missing required permissions/secrets.
+{% endif %}
 
 Issue context:
 Identifier: {{ issue.identifier }}
@@ -64,8 +64,8 @@ No description provided.
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
-2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
-3. Final message must report completed actions and blockers only. Do not include "next steps for user".
+2. Stop early only for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to this workflow.
+3. Final message must include completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
 
@@ -73,27 +73,21 @@ Work only in the provided repository copy. Do not touch any other path.
 
 The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
 
-## Default posture
+## Operating profile: Balanced (default)
 
-- Start by determining the ticket's current status, then follow the matching flow for that status.
-- Start every task by opening the tracking workpad comment and bringing it up to date before doing new implementation work.
-- Spend extra effort up front on planning and verification design before implementation.
-- Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
-- Keep ticket metadata current (state, checklist, acceptance criteria, links).
-- Treat a single persistent Linear comment as the source of truth for progress.
-- Use that single workpad comment for all progress and handoff notes; do not post separate "done"/summary comments.
-- Keep the workpad "hot": post a progress heartbeat at least every 2 minutes while a run is active, even when no milestone has completed yet.
-- Heartbeat updates must include: current step, current command/action in flight, and latest observed result or blocker.
-- Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: mirror it in the workpad and execute it before considering the work complete.
-- When meaningful out-of-scope improvements are discovered during execution,
-  file a separate Linear issue instead of expanding scope. The follow-up issue
-  must include a clear title, description, and acceptance criteria, be placed in
-  `Backlog`, be assigned to the same project as the current issue, link the
-  current issue as `related`, and use `blockedBy` when the follow-up depends on
-  the current issue.
-- Move status only when the matching quality bar is met.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
-- Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+- Keep the status model unchanged: `Todo/In Progress/In Review/Rework/Merging/Done`.
+- Route execution by complexity:
+  - `Simple`: touches at most 2 files, no migration/schema change, no public API/contract change, no security-critical change.
+  - `Standard`: any ticket that does not match `Simple`.
+- Auto-upgrade to `Standard` immediately when risk appears (contract/API, migration/schema, security, broad cross-cutting changes).
+- Use one persistent Linear comment as source of truth: `## Claude Workpad`.
+- Post workpad updates by milestones only, not by timer:
+  - execution start,
+  - scope/risk change,
+  - validation final,
+  - true blocker.
+- If ticket includes `Validation`, `Test Plan`, or `Testing`, mirror those items into workpad and execute them before completion.
+- Keep scope tight. If meaningful out-of-scope work is found, create a separate `Backlog` issue with clear title/description/acceptance criteria and link it as `related` (`blockedBy` only if dependency exists).
 
 ## Related skills
 
@@ -103,199 +97,147 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `pull`: keep branch updated with latest `origin/main` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.claude/skills/land/SKILL.md`, which includes the `land` loop.
 
+Use skills conditionally by phase and complexity. For `Simple`, avoid unnecessary skill loops.
+
 ## Status map
 
-- `Backlog` -> out of scope for this workflow; do not modify.
-- `Todo` -> queued; immediately transition to `In Progress` before active work.
-  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `In Review`).
-- `In Progress` -> implementation actively underway.
-- `In Review` -> PR is attached and validated; waiting on human approval.
-- `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
-- `Rework` -> reviewer requested changes; planning + implementation required.
-- `Done` -> terminal state; no further action required.
+- `Backlog` -> out of scope; do not modify.
+- `Todo` -> queued; move to `In Progress` before active work.
+  - If a PR is already attached, run the PR feedback sweep before closing execution.
+- `In Progress` -> active implementation.
+- `In Review` -> PR attached and validated; waiting on human review.
+- `Merging` -> approved by human; execute `land` skill flow (do not call `gh pr merge` directly).
+- `Rework` -> reviewer requested changes; execute rework flow.
+- `Done` -> terminal; no further action.
 
-## Step 0: Determine current ticket state and route
+## Step 0: Route by state
 
-1. Fetch the issue by explicit ticket ID.
-2. Read the current state.
-3. Route to the matching flow:
-   - `Backlog` -> do not modify issue content/state; stop and wait for human to move it to `Todo`.
-   - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
-     - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
-   - `In Progress` -> continue execution flow from current scratchpad comment.
-   - `In Review` -> wait and poll for decision/review updates.
-   - `Merging` -> on entry, open and follow `.claude/skills/land/SKILL.md`; do not call `gh pr merge` directly.
-   - `Rework` -> run rework flow.
-   - `Done` -> do nothing and shut down.
-4. Check whether a PR already exists for the current branch and whether it is closed.
-   - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `Todo` tickets, do startup sequencing in this exact order:
-   - `update_issue(..., state: "In Progress")`
-   - find/create `## Claude Workpad` bootstrap comment
-   - only then begin analysis/planning/implementation work.
-6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
+1. Fetch issue by explicit ticket ID.
+2. Read current state.
+3. Route:
+   - `Backlog`: stop and wait for human to move to `Todo`.
+   - `Todo`: move to `In Progress`, ensure workpad exists, then execute.
+   - `In Progress`: continue from workpad.
+   - `In Review`: wait and poll for review decision.
+   - `Merging`: follow `.claude/skills/land/SKILL.md` and run `land` loop.
+   - `Rework`: follow rework flow.
+   - `Done`: do nothing and shut down.
+4. If branch PR exists and is `CLOSED` or `MERGED`, do not reuse it. Create a fresh branch from `origin/main` and restart execution.
+5. If state and issue content conflict, add a short note in the workpad and proceed with the safest flow.
 
-## Step 1: Start/continue execution (Todo or In Progress)
+## Step 1: Start/continue execution (`Todo` or `In Progress`)
 
-1.  Find or create a single persistent scratchpad comment for the issue:
-    - Search existing comments for a marker header: `## Claude Workpad`.
-    - Ignore resolved comments while searching; only active/unresolved comments are eligible to be reused as the live workpad.
-    - If found, reuse that comment; do not create a new workpad comment.
-    - If not found, create one workpad comment and use it for all updates.
-    - Persist the workpad comment ID and only write progress updates to that ID.
-2.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
-3.  Immediately reconcile the workpad before new edits:
-    - Check off items that are already done.
-    - Expand/fix the plan so it is comprehensive for current scope.
-    - Ensure `Acceptance Criteria` and `Validation` are current and still make sense for the task.
-4.  Start work by writing/updating a hierarchical plan in the workpad comment.
-5.  Ensure the workpad includes a compact environment stamp at the top as a code fence line:
-    - Format: `<host>:<abs-workdir>@<short-sha>`
-    - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/MT-32@7bdde33bc`
-    - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
-6.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
-    - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
-    - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
-    - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
-7.  Run a principal-style self-review of the plan and refine it in the comment.
-8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
-    - Include a `pull skill evidence` note with:
-      - merge source(s),
-      - result (`clean` or `conflicts resolved`),
-      - resulting `HEAD` short SHA.
-10. Compact context and proceed to execution.
+1. Find or create one active `## Claude Workpad` comment. Reuse it if it already exists.
+2. Add/update compact environment stamp at top:
+   - `<host>:<abs-workdir>@<short-sha>`
+3. Classify complexity and record it in workpad (`Complexity: Simple|Standard`).
+4. Build/update the plan according to complexity:
+   - `Simple`: mini-plan with 3-5 bullets.
+   - `Standard`: fuller hierarchical plan with parent/child checklist.
+5. Add acceptance criteria and validation checklist in workpad.
+6. Mirror any ticket-authored `Validation/Test Plan/Testing` items into required checkboxes.
+7. Run `pull` sync before edits and record result in `Notes` (source, `clean`/`conflicts resolved`, resulting short SHA).
+8. Post milestone update in workpad: `execution start`.
 
-## PR feedback sweep protocol (required)
+## Reproduction and validation policy
 
-When a ticket has an attached PR, run this protocol before moving to `In Review`:
+- `Simple`: reproduction is optional when issue signal is already explicit in ticket context and fix target is unambiguous.
+- `Standard`: capture a concrete reproduction signal before code edits when feasible.
+- Always run relevant validation before push/review:
+  - `Simple`: focused validation for changed behavior.
+  - `Standard`: broader validation proportional to impact.
+- Ticket-provided validation requirements are mandatory in both modes.
 
-1. Identify the PR number from issue links/attachments.
-2. Gather feedback from all channels:
+## PR feedback sweep protocol (required when PR exists)
+
+Before moving to `In Review`, if a PR is attached:
+
+1. Identify PR number from issue links/attachments.
+2. Collect feedback from:
    - Top-level PR comments (`gh pr view --comments`).
    - Inline review comments (`gh api repos/<owner>/<repo>/pulls/<pr>/comments`).
    - Review summaries/states (`gh pr view --json reviews`).
-3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
-   - code/test/docs updated to address it, or
-   - explicit, justified pushback reply is posted on that thread.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
+3. Treat every actionable comment (human or bot) as blocking until resolved by:
+   - code/test/docs update, or
+   - explicit justified pushback reply.
+4. Update workpad checklist with feedback resolution status.
+5. Re-run relevant validation after feedback changes.
+6. Repeat until no actionable comments remain.
 
-## Blocked-access escape hatch (required behavior)
+## Step 2: Execution phase (`In Progress` -> `In Review`)
 
-Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
+1. Confirm repo state (`branch`, `git status`, `HEAD`) and keep workpad as the active checklist.
+2. Implement scoped changes.
+3. Update workpad at milestone boundaries only:
+   - scope/risk change,
+   - validation final,
+   - blocker.
+4. Keep checklists accurate (plan, acceptance, validation).
+5. Before each `git push`, run required validation for current scope and ensure green.
+6. Publish phase (explicit):
+   - Run `push` skill (or equivalent commands) to push branch and create/update PR.
+   - On success, require a concrete PR URL via `gh pr view --json url -q .url`.
+   - Attach PR URL to issue (prefer attachment) and ensure PR label `symphony`.
+7. PR existence check before transition:
+   - If PR URL exists, continue with normal feedback sweep/checks flow.
+   - If PR URL is missing due to GitHub auth/permission/repo policy error, record blocker details in workpad and move issue to `In Review` using the publish-blocker path.
+8. Stuck-session guardrail:
+   - If branch has new commits but no PR URL after publish attempts/fallbacks, do not keep retrying in `In Progress`.
+   - Record exact command(s), stderr, and fallback attempts in workpad, then move issue to `In Review` as blocked.
+9. Merge latest `origin/main` into branch, resolve conflicts, and rerun relevant checks.
+10. Finalize workpad with completed checklist + concise validation evidence.
+11. Move to `In Review` only when completion bar is satisfied.
 
-- GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not move to `In Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `In Review` with a short blocker brief in the workpad that includes:
+## Blocked-access escape hatch
+
+Use only for true external blockers that cannot be resolved in-session.
+
+- GitHub access is not a blocker by default for normal sync/push issues; attempt reasonable fallback strategies first.
+- Explicit exception: PR creation/update failures caused by GitHub auth/permissions/repo policy are valid blockers after fallback attempts and should follow the publish-blocker path.
+- If required non-GitHub tooling/auth is missing, move to `In Review` with concise blocker brief in workpad:
   - what is missing,
   - why it blocks required acceptance/validation,
-  - exact human action needed to unblock.
-- Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+  - exact action needed to unblock.
 
-## Step 2: Execution phase (Todo -> In Progress -> In Review)
+## Step 3: `In Review` and merge handling
 
-1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
-2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
-3.  Load the existing workpad comment and treat it as the active execution checklist.
-    - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
-4.  Implement against the hierarchical TODOs and keep the comment current:
-    - Check off completed items.
-    - Add newly discovered items in the appropriate section.
-    - Keep parent/child structure intact as scope evolves.
-    - Update the workpad immediately after each meaningful milestone (for example: reproduction complete, code change landed, validation run, review feedback addressed).
-    - If a command/test/build may run longer than ~2 minutes, write a quick pre-update before starting it and a follow-up update immediately after it finishes.
-    - During long-running execution, do not let more than 2 minutes pass without updating the workpad.
-    - Never leave completed work unchecked in the plan.
-    - For tickets that started as `Todo` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work.
-5.  Run validation/tests required for the scope.
-    - Mandatory gate: execute all ticket-provided `Validation`/`Test Plan`/ `Testing` requirements when present; treat unmet items as incomplete work.
-    - Prefer a targeted proof that directly demonstrates the behavior you changed.
-    - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
-    - Revert every temporary proof edit before commit/push.
-    - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
-    - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
-6.  Re-check all acceptance criteria and close any gaps.
-7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
-8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
-    - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
-10. Update the workpad comment with final checklist status and validation notes.
-    - Mark completed plan/acceptance/validation checklist items as checked.
-    - Add final handoff notes (commit + validation summary) in the same workpad comment.
-    - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
-    - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
-    - Do not post any additional completion summary comment.
-11. Before moving to `In Review`, poll PR feedback and checks:
-    - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
-    - Run the full PR feedback sweep protocol.
-    - Confirm PR checks are passing (green) after the latest changes.
-    - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
-    - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
-    - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `In Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `In Review` with the blocker brief and explicit unblock actions.
-13. For `Todo` tickets that already had a PR attached at kickoff:
-    - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
-    - Ensure branch was pushed with any required updates.
-    - Then move to `In Review`.
-
-## Step 3: In Review and merge handling
-
-1. When the issue is in `In Review`, do not code or change ticket content.
-2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `.claude/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+1. In `In Review`, do not code or change ticket scope.
+2. Poll for review updates and PR feedback.
+3. If feedback requires changes, move to `Rework`.
+4. If approved, human moves issue to `Merging`.
+5. In `Merging`, run `land` skill loop from `.claude/skills/land/SKILL.md` (never `gh pr merge` directly).
+6. After merge, move issue to `Done`.
 
 ## Step 4: Rework handling
 
-1. Treat `Rework` as a full approach reset, not incremental patching.
-2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
-3. Close the existing PR tied to the issue.
-4. Remove the existing `## Claude Workpad` comment from the issue.
-5. Create a fresh branch from `origin/main`.
-6. Start over from the normal kickoff flow:
-   - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
-   - Create a new bootstrap `## Claude Workpad` comment.
-   - Build a fresh plan/checklist and execute end-to-end.
+1. Treat `Rework` as a fresh attempt with updated approach.
+2. Re-read issue body and review feedback; record what changes this attempt.
+3. Close prior PR tied to the issue.
+4. Remove old `## Claude Workpad` comment.
+5. Create fresh branch from `origin/main`.
+6. Restart from normal kickoff flow.
 
-## Completion bar before In Review
+## Completion bar before `In Review`
 
-- Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
-- Acceptance criteria and required ticket-provided validation items are complete.
-- Validation/tests are green for the latest commit.
-- PR feedback sweep is complete and no actionable comments remain.
-- PR checks are green, branch is pushed, and PR is linked on the issue.
-- Required PR metadata is present (`symphony` label).
-- If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+- Workpad checklist reflects actual completed work.
+- Acceptance criteria are complete.
+- Required ticket-provided validation items are complete.
+- Relevant validation is green for latest commit.
+- Normal path: PR exists, is linked to issue, has label `symphony`, and (if applicable) feedback sweep/checks are complete.
+- Soft-gate blocker path: PR may be missing only when publish blocker is explicitly documented in workpad with command, stderr, attempted fallback, and required human unblock action.
 
 ## Guardrails
 
-- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
-- Do not edit the issue body/description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`## Claude Workpad`) per issue.
-- If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
-- Temporary proof edits are allowed only for local verification and must be reverted before commit.
-- If out-of-scope improvements are found, create a separate Backlog issue rather
-  than expanding current scope, and include a clear
-  title/description/acceptance criteria, same-project assignment, a `related`
-  link to the current issue, and `blockedBy` when the follow-up depends on the
-  current issue.
-- Do not move to `In Review` unless the `Completion bar before In Review` is satisfied.
-- In `In Review`, do not make changes; wait and poll.
-- If state is terminal (`Done`), do nothing and shut down.
-- Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
+- Do not change state semantics.
+- Do not edit issue body for planning/progress tracking.
+- Keep exactly one persistent `## Claude Workpad` comment per issue.
+- If branch PR is closed/merged, do not reuse branch state.
+- Do not expand scope with opportunistic refactors.
+- If blocked and no workpad exists yet, create one blocker comment with impact and unblock action.
 
 ## Workpad template
 
-Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+Use this structure and keep it updated in place:
 
 ````md
 ## Claude Workpad
@@ -304,12 +246,14 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 <hostname>:<abs-path>@<short-sha>
 ```
 
+### Mode
+
+- Complexity: `Simple` or `Standard`
+
 ### Plan
 
-- [ ] 1\. Parent task
-  - [ ] 1.1 Child task
-  - [ ] 1.2 Child task
-- [ ] 2\. Parent task
+- [ ] Task 1
+- [ ] Task 2
 
 ### Acceptance Criteria
 
@@ -318,13 +262,13 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 ### Validation
 
-- [ ] targeted tests: `<command>`
+- [ ] command/result evidence
 
 ### Notes
 
-- <short progress note with timestamp>
+- [timestamp] milestone update
 
 ### Confusions
 
-- <only include when something was confusing during execution>
+- <only when needed>
 ````

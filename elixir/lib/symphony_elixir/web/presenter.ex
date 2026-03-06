@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Web.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.Claude.SessionLog
 
   @spec state_payload(GenServer.name(), pos_integer()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -79,7 +80,7 @@ defmodule SymphonyElixir.Web.Presenter do
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
       logs: %{
-        claude_session_logs: []
+        claude_session_logs: SessionLog.list_issue_logs(issue_identifier)
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,

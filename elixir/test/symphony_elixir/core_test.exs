@@ -438,6 +438,9 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-558",
       issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
+      session_id: "session-resume-558",
+      last_claude_event: :max_turns_exhausted,
+      last_claude_message: %{message: "Claude reached its max-turn limit. Resume with session session-resume-558."},
       started_at: DateTime.utc_now()
     }
 
@@ -454,7 +457,16 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+
+    assert %{
+             attempt: 1,
+             due_at_ms: due_at_ms,
+             resume_session_id: "session-resume-558",
+             error: error
+           } = state.retry_attempts[issue_id]
+
+    assert error =~ "max-turn limit"
+    assert error =~ "Auto-resume scheduled for session session-resume-558"
     assert is_integer(due_at_ms)
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
