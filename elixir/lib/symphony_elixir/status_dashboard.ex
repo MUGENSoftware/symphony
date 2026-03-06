@@ -1554,7 +1554,7 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_usage_counts(usage) when is_map(usage) do
-    input =
+    base_input =
       parse_integer(
         map_value(usage, [
           "input_tokens",
@@ -1566,7 +1566,26 @@ defmodule SymphonyElixir.StatusDashboard do
           "promptTokens",
           :promptTokens
         ])
-      )
+      ) || 0
+
+    cached_input =
+      [
+        "cached_input_tokens",
+        :cached_input_tokens,
+        "cache_creation_input_tokens",
+        :cache_creation_input_tokens,
+        "cache_read_input_tokens",
+        :cache_read_input_tokens,
+        "cachedInputTokens",
+        :cachedInputTokens,
+        "cacheCreationInputTokens",
+        :cacheCreationInputTokens,
+        "cacheReadInputTokens",
+        :cacheReadInputTokens
+      ]
+      |> Enum.reduce(0, fn field, acc ->
+        acc + (parse_integer(Map.get(usage, field)) || 0)
+      end)
 
     output =
       parse_integer(
@@ -1592,7 +1611,12 @@ defmodule SymphonyElixir.StatusDashboard do
           "totalTokens",
           :totalTokens
         ])
-      )
+      ) || (base_input + cached_input + (output || 0))
+
+    input =
+      if base_input > 0 or cached_input > 0 do
+        base_input + cached_input
+      end
 
     parts =
       []

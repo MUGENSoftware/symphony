@@ -274,6 +274,85 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.claude_totals.total_tokens == 16
   end
 
+  test "orchestrator snapshot counts cached input tokens when turn completed usage omits total_tokens" do
+    issue_id = "issue-turn-completed-cached-usage"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-202A",
+      title: "Turn completed cached usage test",
+      description: "Track cached input in final turn usage",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-202A"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :TurnCompletedCachedUsageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_claude_message: nil,
+      last_claude_timestamp: nil,
+      last_claude_event: nil,
+      claude_input_tokens: 0,
+      claude_output_tokens: 0,
+      claude_total_tokens: 0,
+      claude_last_reported_input_tokens: 0,
+      claude_last_reported_output_tokens: 0,
+      claude_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:claude_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         payload: %{
+           method: "turn/completed",
+           usage: %{
+             "input_tokens" => 12,
+             "cached_input_tokens" => 30,
+             "output_tokens" => 4
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.claude_input_tokens == 42
+    assert snapshot_entry.claude_output_tokens == 4
+    assert snapshot_entry.claude_total_tokens == 46
+
+    send(pid, {:DOWN, process_ref, :process, self(), :normal})
+    completed_state = :sys.get_state(pid)
+    assert completed_state.claude_totals.input_tokens == 42
+    assert completed_state.claude_totals.output_tokens == 4
+    assert completed_state.claude_totals.total_tokens == 46
+  end
+
   test "orchestrator snapshot tracks claude token-count cumulative usage payloads" do
     issue_id = "issue-token-count-snapshot"
 
@@ -1272,22 +1351,25 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "status dashboard renders last claude message in EVENT column" do
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-233",
-        state: "running",
-        session_id: "thread-1234567890",
-        claude_cli_pid: "4242",
-        claude_total_tokens: 12,
-        runtime_seconds: 15,
-        last_claude_event: :notification,
-        last_claude_message: %{
-          event: :notification,
-          message: %{
-            "method" => "turn/completed",
-            "params" => %{"turn" => %{"status" => "completed"}}
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-233",
+          state: "running",
+          session_id: "thread-1234567890",
+          claude_cli_pid: "4242",
+          claude_total_tokens: 12,
+          runtime_seconds: 15,
+          last_claude_event: :notification,
+          last_claude_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
           }
-        }
-      })
+        },
+        160
+      )
 
     plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
 

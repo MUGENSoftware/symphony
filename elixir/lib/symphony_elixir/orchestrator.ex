@@ -1390,21 +1390,33 @@ defmodule SymphonyElixir.Orchestrator do
   defp integer_token_map?(payload) do
     token_fields = [
       :input_tokens,
+      :cached_input_tokens,
+      :cache_creation_input_tokens,
+      :cache_read_input_tokens,
       :output_tokens,
       :total_tokens,
       :prompt_tokens,
       :completion_tokens,
       :inputTokens,
+      :cachedInputTokens,
+      :cacheCreationInputTokens,
+      :cacheReadInputTokens,
       :outputTokens,
       :totalTokens,
       :promptTokens,
       :completionTokens,
       "input_tokens",
+      "cached_input_tokens",
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
       "output_tokens",
       "total_tokens",
       "prompt_tokens",
       "completion_tokens",
       "inputTokens",
+      "cachedInputTokens",
+      "cacheCreationInputTokens",
+      "cacheReadInputTokens",
       "outputTokens",
       "totalTokens",
       "promptTokens",
@@ -1418,8 +1430,20 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp get_token_usage(usage, :input),
-    do:
+  defp get_token_usage(usage, :input) do
+    total_token_components(usage).input
+  end
+
+  defp get_token_usage(usage, :output) do
+    total_token_components(usage).output
+  end
+
+  defp get_token_usage(usage, :total) do
+    total_token_components(usage).total
+  end
+
+  defp total_token_components(usage) when is_map(usage) do
+    base_input =
       payload_get(usage, [
         "input_tokens",
         "prompt_tokens",
@@ -1430,10 +1454,25 @@ defmodule SymphonyElixir.Orchestrator do
         :promptTokens,
         "inputTokens",
         :inputTokens
+      ]) || 0
+
+    cached_input =
+      sum_token_fields(usage, [
+        "cached_input_tokens",
+        :cached_input_tokens,
+        "cache_creation_input_tokens",
+        :cache_creation_input_tokens,
+        "cache_read_input_tokens",
+        :cache_read_input_tokens,
+        "cachedInputTokens",
+        :cachedInputTokens,
+        "cacheCreationInputTokens",
+        :cacheCreationInputTokens,
+        "cacheReadInputTokens",
+        :cacheReadInputTokens
       ])
 
-  defp get_token_usage(usage, :output),
-    do:
+    output =
       payload_get(usage, [
         "output_tokens",
         "completion_tokens",
@@ -1445,10 +1484,9 @@ defmodule SymphonyElixir.Orchestrator do
         :outputTokens,
         "completionTokens",
         :completionTokens
-      ])
+      ]) || 0
 
-  defp get_token_usage(usage, :total),
-    do:
+    total =
       payload_get(usage, [
         "total_tokens",
         "total",
@@ -1456,7 +1494,26 @@ defmodule SymphonyElixir.Orchestrator do
         :total,
         "totalTokens",
         :totalTokens
-      ])
+      ]) || (base_input + cached_input + output)
+
+    %{
+      input: base_input + cached_input,
+      output: output,
+      total: total
+    }
+  end
+
+  defp total_token_components(_usage), do: %{input: nil, output: nil, total: nil}
+
+  defp sum_token_fields(usage, fields) when is_map(usage) and is_list(fields) do
+    fields
+    |> Enum.reduce(0, fn field, acc ->
+      case map_integer_value(usage, field) do
+        value when is_integer(value) -> acc + value
+        _ -> acc
+      end
+    end)
+  end
 
   defp payload_get(payload, fields) when is_list(fields) do
     Enum.find_value(fields, fn field -> map_integer_value(payload, field) end)
