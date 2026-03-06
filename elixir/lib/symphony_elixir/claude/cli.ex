@@ -138,16 +138,17 @@ defmodule SymphonyElixir.Claude.Cli do
   # ── CLI subprocess ─────────────────────────────────────────────────────
 
   defp start_cli(workspace, prompt, resume_session_id) do
-    command = Config.claude_command()
-    executable = System.find_executable(command)
+    command = Config.claude_command() |> to_string() |> String.trim()
 
-    if is_nil(executable) do
-      {:error, {:claude_cli_not_found, command}}
-    else
-      args = build_cli_args(prompt, resume_session_id)
+    with {:ok, executable_name, base_args} <- parse_command(command),
+         executable when is_binary(executable) <- System.find_executable(executable_name) do
+      args = build_cli_args(base_args, prompt, resume_session_id)
 
       expanded_workspace = Path.expand(workspace)
-      Logger.debug("Claude CLI starting: #{executable} #{Enum.join(args, " ")} (cwd=#{expanded_workspace})")
+
+      Logger.debug(
+        "Claude CLI starting: #{executable} #{Enum.join(redact_prompt_arg(args), " ")} (cwd=#{expanded_workspace})"
+      )
 
       port =
         Port.open(
@@ -163,40 +164,69 @@ defmodule SymphonyElixir.Claude.Cli do
         )
 
       {:ok, port}
+    else
+      nil ->
+        {:error, {:claude_cli_not_found, command}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
-  defp build_cli_args(prompt, resume_session_id) do
-    args = ["--output-format", Config.claude_output_format()]
+  defp parse_command(""), do: {:error, :missing_claude_command}
 
-    args = maybe_append(args, "--model", Config.claude_model())
-    args = maybe_append(args, "--max-turns", to_string_or_nil(Config.claude_max_turns()))
+  defp parse_command(command) when is_binary(command) do
+    try do
+      case OptionParser.split(command) do
+        [executable_name | base_args] ->
+          {:ok, executable_name, base_args}
+
+        _ ->
+          {:error, :missing_claude_command}
+      end
+    rescue
+      _error ->
+        {:error, {:invalid_claude_command, command}}
+    end
+  end
+
+  defp build_cli_args(base_args, prompt, resume_session_id) do
+    args = base_args
+    args = maybe_append_flag(args, "--output-format", Config.claude_output_format())
+
+    args = maybe_append_flag(args, "--model", Config.claude_model())
+    args = maybe_append_flag(args, "--max-turns", to_string_or_nil(Config.claude_max_turns()))
+    args = maybe_append_verbose_for_stream_json(args)
 
     args =
       if Config.claude_dangerously_skip_permissions?() do
-        args ++ ["--dangerously-skip-permissions"]
+        maybe_append_switch(args, "--dangerously-skip-permissions")
       else
         args
       end
 
-    args = maybe_append(args, "--permission-mode", Config.claude_permission_mode())
-    args = maybe_append(args, "--mcp-config", Config.claude_mcp_config())
-    args = maybe_append(args, "--append-system-prompt", Config.claude_append_system_prompt())
+    args = maybe_append_flag(args, "--permission-mode", Config.claude_permission_mode())
+    args = maybe_append_flag(args, "--mcp-config", Config.claude_mcp_config())
+    args = maybe_append_flag(args, "--append-system-prompt", Config.claude_append_system_prompt())
 
     args =
-      case Config.claude_allowed_tools() do
-        tools when is_list(tools) and tools != [] ->
-          Enum.reduce(tools, args, fn tool, acc ->
-            acc ++ ["--allowedTools", tool]
-          end)
+      if flag_present?(args, "--allowedTools") do
+        args
+      else
+        case Config.claude_allowed_tools() do
+          tools when is_list(tools) and tools != [] ->
+            Enum.reduce(tools, args, fn tool, acc ->
+              acc ++ ["--allowedTools", tool]
+            end)
 
-        _ ->
-          args
+          _ ->
+            args
+        end
       end
 
     args =
       if is_binary(resume_session_id) and resume_session_id != "" do
-        args ++ ["--resume", resume_session_id]
+        maybe_append_flag(args, "--resume", resume_session_id)
       else
         args
       end
@@ -204,12 +234,66 @@ defmodule SymphonyElixir.Claude.Cli do
     # Pass the prompt as a -p argument rather than via stdin.
     # Sending <<4>> (Ctrl-D) to a pipe doesn't signal EOF to the subprocess,
     # so Claude would hang waiting for more input if we used stdin.
-    args ++ ["-p", prompt]
+    maybe_append_flag(args, "-p", prompt)
   end
 
-  defp maybe_append(args, _flag, nil), do: args
-  defp maybe_append(args, _flag, ""), do: args
-  defp maybe_append(args, flag, value), do: args ++ [flag, value]
+  defp maybe_append_flag(args, _flag, nil), do: args
+  defp maybe_append_flag(args, _flag, ""), do: args
+
+  defp maybe_append_flag(args, flag, value) do
+    if flag_present?(args, flag) do
+      args
+    else
+      args ++ [flag, value]
+    end
+  end
+
+  defp maybe_append_switch(args, flag) do
+    if flag_present?(args, flag), do: args, else: args ++ [flag]
+  end
+
+  defp maybe_append_verbose_for_stream_json(args) do
+    stream_json? =
+      case flag_value(args, "--output-format") do
+        nil -> Config.claude_output_format() == "stream-json"
+        value -> value == "stream-json"
+      end
+
+    if stream_json? do
+      maybe_append_switch(args, "--verbose")
+    else
+      args
+    end
+  end
+
+  defp flag_present?(args, flag) when is_list(args) and is_binary(flag) do
+    Enum.any?(args, fn arg -> arg == flag or String.starts_with?(arg, flag <> "=") end)
+  end
+
+  defp flag_value(args, flag) when is_list(args) and is_binary(flag) do
+    case Enum.find_index(args, fn arg -> arg == flag or String.starts_with?(arg, flag <> "=") end) do
+      nil ->
+        nil
+
+      index ->
+        current = Enum.at(args, index)
+
+        cond do
+          String.starts_with?(current, flag <> "=") ->
+            String.replace_prefix(current, flag <> "=", "")
+
+          true ->
+            Enum.at(args, index + 1)
+        end
+    end
+  end
+
+  defp redact_prompt_arg(args) when is_list(args) do
+    case Enum.find_index(args, &(&1 == "-p")) do
+      nil -> args
+      index -> List.replace_at(args, index + 1, "<prompt>")
+    end
+  end
 
   defp to_string_or_nil(nil), do: nil
   defp to_string_or_nil(value) when is_integer(value), do: Integer.to_string(value)
@@ -233,7 +317,7 @@ defmodule SymphonyElixir.Claude.Cli do
         complete_line = pending <> to_string(chunk)
         Logger.debug("Claude CLI stream line: #{String.slice(complete_line, 0, 500)}")
 
-        case handle_stream_line(complete_line, port, on_message, metadata) do
+        case handle_stream_line(complete_line, on_message, metadata) do
           {:continue, _updated_metadata} ->
             receive_loop(port, on_message, metadata, stall_timeout, turn_timeout, start_ms, "")
 
@@ -284,7 +368,7 @@ defmodule SymphonyElixir.Claude.Cli do
 
   # ── Event handling ─────────────────────────────────────────────────────
 
-  defp handle_stream_line(line, port, on_message, metadata) do
+  defp handle_stream_line(line, on_message, metadata) do
     case Jason.decode(line) do
       {:ok, %{"type" => "result"} = payload} ->
         session_id = get_in(payload, ["session_id"])

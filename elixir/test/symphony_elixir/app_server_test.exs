@@ -1,6 +1,68 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  test "app server auto-adds --verbose for stream-json and preserves command args" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stream-json-verbose-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-100")
+      claude_binary = Path.join(test_root, "fake-claude")
+      trace_file = Path.join(test_root, "claude-args.trace")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-args.trace}"
+      printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
+      printf '%s\\n' '{"type":"result","session_id":"session-100","usage":{"input_tokens":1,"output_tokens":1}}'
+      exit 0
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "#{claude_binary} --model claude-sonnet-4"
+      )
+
+      issue = %Issue{
+        id: "issue-cli-args",
+        identifier: "MT-100",
+        title: "Validate stream-json args",
+        description: "Ensure --verbose is included",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-100",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "session-100"}} = AppServer.run(workspace, "hello", issue)
+
+      trace = File.read!(trace_file)
+      assert String.contains?(trace, "--model claude-sonnet-4")
+      assert String.contains?(trace, "--output-format stream-json")
+      assert String.contains?(trace, "--verbose")
+      assert String.contains?(trace, "-p hello")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
