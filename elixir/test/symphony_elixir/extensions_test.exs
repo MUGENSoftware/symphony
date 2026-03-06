@@ -351,6 +351,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert status == 200
     assert Map.fetch!(headers, "content-type") =~ "text/html"
     assert body =~ "Symphony Dashboard"
+    assert body =~ ~s|document.querySelector("meta[name='csrf-token']")|
+    assert body =~ ~s|params: {_csrf_token: csrfToken}|
 
     {status, headers, body} = http_request(port, "GET", "/api/v1/state")
     assert status == 200
