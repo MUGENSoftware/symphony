@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Claude.Cli do
 
   require Logger
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Claude.DynamicTool
 
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
@@ -44,42 +45,87 @@ defmodule SymphonyElixir.Claude.Cli do
   """
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_turn(
-        %{session_id: prev_session_id, workspace: workspace} = _session,
+        %{session_id: prev_session_id, workspace: workspace} = session,
         prompt,
         issue,
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    starting_port = Map.get(session, :port)
+    starting_mode = Map.get(session, :mode)
+    thread_id = Map.get(session, :thread_id)
 
-    case start_cli(workspace, prompt, prev_session_id) do
-      {:ok, port} ->
+    start_result =
+      if is_port(starting_port) and starting_mode == :app_server do
+        {:ok, starting_port, :app_server}
+      else
+        start_cli(workspace, prompt, prev_session_id)
+      end
+
+    case start_result do
+      {:ok, port, mode} ->
         metadata = port_metadata(port)
 
-        emit_message(
-          on_message,
-          :session_started,
-          %{session_id: prev_session_id, workspace: workspace},
-          metadata
-        )
+        if mode == :stream_json do
+          emit_message(
+            on_message,
+            :session_started,
+            %{session_id: prev_session_id, workspace: workspace},
+            metadata
+          )
+        end
 
         Logger.info(
           "Claude CLI turn started for #{issue_context(issue)} workspace=#{workspace}" <>
             if(prev_session_id, do: " resume=#{prev_session_id}", else: "")
         )
 
-        case receive_stream(port, on_message, metadata) do
+        result =
+          case mode do
+            :app_server ->
+              execute_app_server_turn(
+                port,
+                workspace,
+                prompt,
+                thread_id || prev_session_id,
+                on_message,
+                metadata,
+                opts
+              )
+
+            :stream_json ->
+              receive_stream(port, on_message, metadata)
+          end
+
+        case result do
           {:ok, result} ->
             session_id = Map.get(result, :session_id, prev_session_id)
+            next_thread_id = Map.get(result, :thread_id, thread_id)
 
             Logger.info(
               "Claude CLI turn completed for #{issue_context(issue)} session_id=#{session_id}"
             )
 
+            session =
+              case mode do
+                :app_server ->
+                  %{
+                    session_id: session_id,
+                    workspace: workspace,
+                    mode: :app_server,
+                    port: port,
+                    thread_id: next_thread_id
+                  }
+
+                :stream_json ->
+                  %{session_id: session_id, workspace: workspace}
+              end
+
             {:ok,
              %{
                result: :turn_completed,
                session_id: session_id,
-               session: %{session_id: session_id, workspace: workspace},
+               session: session,
                usage: Map.get(result, :usage)
              }}
 
@@ -110,6 +156,11 @@ defmodule SymphonyElixir.Claude.Cli do
   to tear down.
   """
   @spec stop_session(session()) :: :ok
+  def stop_session(%{port: port}) when is_port(port) do
+    stop_port(port)
+    :ok
+  end
+
   def stop_session(_session), do: :ok
 
   # ── Workspace validation ───────────────────────────────────────────────
@@ -142,7 +193,8 @@ defmodule SymphonyElixir.Claude.Cli do
 
     with {:ok, executable_name, base_args} <- parse_command(command),
          executable when is_binary(executable) <- System.find_executable(executable_name) do
-      args = build_cli_args(base_args, prompt, resume_session_id)
+      mode = command_mode(base_args)
+      args = build_cli_args(base_args, prompt, resume_session_id, mode)
 
       expanded_workspace = Path.expand(workspace)
 
@@ -163,7 +215,7 @@ defmodule SymphonyElixir.Claude.Cli do
           ]
         )
 
-      {:ok, port}
+      {:ok, port, mode}
     else
       nil ->
         {:error, {:claude_cli_not_found, command}}
@@ -190,7 +242,11 @@ defmodule SymphonyElixir.Claude.Cli do
     end
   end
 
-  defp build_cli_args(base_args, prompt, resume_session_id) do
+  defp build_cli_args(base_args, _prompt, _resume_session_id, :app_server) do
+    base_args
+  end
+
+  defp build_cli_args(base_args, prompt, resume_session_id, :stream_json) do
     args = base_args
     args = maybe_append_flag(args, "--output-format", Config.claude_output_format())
 
@@ -235,6 +291,14 @@ defmodule SymphonyElixir.Claude.Cli do
     # Sending <<4>> (Ctrl-D) to a pipe doesn't signal EOF to the subprocess,
     # so Claude would hang waiting for more input if we used stdin.
     maybe_append_flag(args, "-p", prompt)
+  end
+
+  defp command_mode(base_args) when is_list(base_args) do
+    if Enum.any?(base_args, &(&1 == "app-server")) do
+      :app_server
+    else
+      :stream_json
+    end
   end
 
   defp maybe_append_flag(args, _flag, nil), do: args
@@ -307,6 +371,153 @@ defmodule SymphonyElixir.Claude.Cli do
     effective_timeout = min(turn_timeout, stall_timeout)
 
     receive_loop(port, on_message, metadata, effective_timeout, turn_timeout, now_ms(), "")
+  end
+
+  defp execute_app_server_turn(
+         port,
+         workspace,
+         prompt,
+         previous_thread_id,
+         on_message,
+         metadata,
+         opts
+       ) do
+    setup_requests =
+      if is_binary(previous_thread_id) and previous_thread_id != "" do
+        [
+          {3, "turn/start",
+           %{
+             "cwd" => Path.expand(workspace),
+             "approvalPolicy" => Config.claude_approval_policy(),
+             "sandboxPolicy" => Config.claude_turn_sandbox_policy(workspace),
+             "threadId" => previous_thread_id,
+             "input" => turn_input_payload(prompt)
+           }
+           |> reject_nil_values()},
+          {4, "turn/input", %{"input" => turn_input_payload(prompt)}}
+        ]
+      else
+        [
+          {1, "initialize", %{"capabilities" => %{"experimentalApi" => true}}},
+          {2, "thread/start",
+           %{
+             "cwd" => Path.expand(workspace),
+             "approvalPolicy" => Config.claude_approval_policy(),
+             "sandbox" => Config.claude_thread_sandbox(),
+             "dynamicTools" => DynamicTool.tool_specs()
+           }
+           |> reject_nil_values()},
+          {3, "turn/start",
+           %{
+             "cwd" => Path.expand(workspace),
+             "approvalPolicy" => Config.claude_approval_policy(),
+             "sandboxPolicy" => Config.claude_turn_sandbox_policy(workspace),
+             "input" => turn_input_payload(prompt)
+           }
+           |> reject_nil_values()},
+          {4, "turn/input", %{"input" => turn_input_payload(prompt)}}
+        ]
+      end
+
+    with :ok <- send_app_server_requests(port, setup_requests) do
+      turn_timeout = Config.claude_turn_timeout_ms()
+      stall_timeout = Config.claude_stall_timeout_ms()
+      effective_timeout = min(turn_timeout, stall_timeout)
+
+      receive_app_server_loop(
+        port,
+        on_message,
+        metadata,
+        opts,
+        effective_timeout,
+        turn_timeout,
+        now_ms(),
+        "",
+        %{thread_id: previous_thread_id}
+      )
+    end
+  end
+
+  defp send_app_server_requests(_port, []), do: :ok
+
+  defp send_app_server_requests(port, [{id, method, params} | rest]) do
+    payload = %{"id" => id, "method" => method, "params" => params}
+
+    case send_json_line(port, payload) do
+      :ok -> send_app_server_requests(port, rest)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp receive_app_server_loop(
+         port,
+         on_message,
+         metadata,
+         opts,
+         stall_timeout,
+         turn_timeout,
+         start_ms,
+         pending,
+         state
+       ) do
+    timeout = remaining_timeout(stall_timeout, turn_timeout, start_ms)
+
+    receive do
+      {^port, {:data, {:eol, chunk}}} ->
+        line = pending <> to_string(chunk)
+        Logger.debug("Claude app-server line: #{String.slice(line, 0, 500)}")
+
+        case handle_app_server_line(line, port, on_message, metadata, opts, state) do
+          {:continue, next_state} ->
+            receive_app_server_loop(
+              port,
+              on_message,
+              metadata,
+              opts,
+              stall_timeout,
+              turn_timeout,
+              start_ms,
+              "",
+              next_state
+            )
+
+          {:done, result} ->
+            {:ok, result}
+
+          {:error, reason} ->
+            drain_port(port)
+            {:error, reason}
+        end
+
+      {^port, {:data, {:noeol, chunk}}} ->
+        receive_app_server_loop(
+          port,
+          on_message,
+          metadata,
+          opts,
+          stall_timeout,
+          turn_timeout,
+          start_ms,
+          pending <> to_string(chunk),
+          state
+        )
+
+      {^port, {:exit_status, 0}} ->
+        Logger.info("Claude app-server exited normally (status=0)")
+        {:ok, %{session_id: Map.get(state, :thread_id)}}
+
+      {^port, {:exit_status, status}} ->
+        Logger.warning("Claude app-server exited with status=#{status}")
+        {:error, {:port_exit, status}}
+    after
+      timeout ->
+        Logger.warning(
+          "Claude app-server timed out after #{timeout}ms (stall_timeout=#{stall_timeout}, turn_timeout=#{turn_timeout})"
+        )
+
+        stop_port(port)
+        {:error, :turn_timeout}
+    end
   end
 
   defp receive_loop(port, on_message, metadata, stall_timeout, turn_timeout, start_ms, pending) do
@@ -471,7 +682,187 @@ defmodule SymphonyElixir.Claude.Cli do
     end
   end
 
+  defp handle_app_server_line(line, port, on_message, metadata, opts, state) do
+    case Jason.decode(line) do
+      {:ok, %{"method" => "turn/completed"} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+        {:done,
+         %{
+           session_id: build_app_server_session_id(state),
+           thread_id: Map.get(state, :thread_id)
+         }}
+
+      {:ok, %{"method" => "turn/input_required"} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+        {:error, {:turn_input_required, payload}}
+
+      {:ok, %{"id" => id, "method" => "item/commandExecution/requestApproval"} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+
+        if auto_approval_enabled?() do
+          :ok = send_json_line(port, %{"id" => id, "result" => %{"decision" => "acceptForSession"}})
+          emit_message(on_message, :approval_auto_approved, %{payload: payload}, metadata)
+          {:continue, state}
+        else
+          {:error, {:approval_required, payload}}
+        end
+
+      {:ok, %{"id" => id, "method" => "item/tool/requestUserInput", "params" => params} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+        answers = build_tool_input_answers(params)
+        :ok = send_json_line(port, %{"id" => id, "result" => %{"answers" => answers}})
+
+        answered_text =
+          answers
+          |> Map.values()
+          |> List.first()
+          |> Map.get("answers", [])
+          |> List.first()
+
+        emit_message(
+          on_message,
+          :tool_input_auto_answered,
+          %{payload: payload, answer: answered_text},
+          metadata
+        )
+
+        {:continue, state}
+
+      {:ok, %{"id" => id, "method" => "item/tool/call", "params" => params} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+
+        tool_name = params["tool"] || params["name"] || "unknown_tool"
+        arguments = params["arguments"] || %{}
+        tool_executor = Keyword.get(opts, :tool_executor, &DynamicTool.execute/2)
+        result = safe_execute_tool(tool_executor, tool_name, arguments)
+        :ok = send_json_line(port, %{"id" => id, "result" => result})
+
+        event =
+          cond do
+            unsupported_tool?(tool_name) -> :unsupported_tool_call
+            result["success"] == true -> :tool_call_completed
+            true -> :tool_call_failed
+          end
+
+        emit_message(on_message, event, %{payload: payload, result: result}, metadata)
+        {:continue, state}
+
+      {:ok, %{"id" => 2, "result" => %{"thread" => %{"id" => thread_id}}} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+        {:continue, Map.put(state, :thread_id, thread_id)}
+
+      {:ok, %{"id" => 3, "result" => %{"turn" => %{"id" => turn_id}}} = payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+
+        next_state = Map.put(state, :turn_id, turn_id)
+
+        emit_message(
+          on_message,
+          :session_started,
+          %{
+            session_id: build_app_server_session_id(next_state)
+          },
+          metadata
+        )
+
+        {:continue, next_state}
+
+      {:ok, payload} ->
+        emit_message(on_message, :notification, %{payload: payload, raw: line}, metadata)
+        {:continue, state}
+
+      {:error, _reason} ->
+        log_non_json_stream_line(line)
+        emit_message(on_message, :malformed, %{payload: line, raw: line}, metadata)
+        {:continue, state}
+    end
+  end
+
   # ── Helpers ────────────────────────────────────────────────────────────
+
+  defp send_json_line(port, payload) when is_port(port) and is_map(payload) do
+    encoded = Jason.encode!(payload) <> "\n"
+
+    case Port.command(port, encoded) do
+      true -> :ok
+      false -> {:error, :port_write_failed}
+    end
+  end
+
+  defp reject_nil_values(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
+  end
+
+  defp auto_approval_enabled? do
+    Config.claude_approval_policy() == "never"
+  end
+
+  defp build_app_server_session_id(state) when is_map(state) do
+    thread_id = Map.get(state, :thread_id)
+    turn_id = Map.get(state, :turn_id)
+
+    cond do
+      is_binary(thread_id) and is_binary(turn_id) -> thread_id <> "-" <> turn_id
+      is_binary(thread_id) -> thread_id
+      true -> nil
+    end
+  end
+
+  defp build_tool_input_answers(%{"questions" => questions}) when is_list(questions) do
+    Enum.reduce(questions, %{}, fn question, acc ->
+      question_id = question["id"] || "answer"
+
+      answer =
+        if mcp_approval_question?(question) and auto_approval_enabled?() do
+          "Approve this Session"
+        else
+          "This is a non-interactive session. Operator input is unavailable."
+        end
+
+      Map.put(acc, question_id, %{"answers" => [answer]})
+    end)
+  end
+
+  defp build_tool_input_answers(_params), do: %{}
+
+  defp turn_input_payload(prompt) when is_binary(prompt) do
+    [%{"type" => "text", "text" => prompt}]
+  end
+
+  defp mcp_approval_question?(%{"id" => id}) when is_binary(id) do
+    String.starts_with?(id, "mcp_tool_call_approval_")
+  end
+
+  defp mcp_approval_question?(_question), do: false
+
+  defp safe_execute_tool(tool_executor, tool_name, arguments) when is_function(tool_executor, 2) do
+    tool_executor.(tool_name, arguments)
+  rescue
+    error ->
+      %{
+        "success" => false,
+        "contentItems" => [
+          %{
+            "type" => "inputText",
+            "text" =>
+              Jason.encode!(%{
+                "error" => %{
+                  "message" => "Dynamic tool execution raised an exception.",
+                  "reason" => Exception.message(error)
+                }
+              })
+          }
+        ]
+      }
+  end
+
+  defp unsupported_tool?(tool_name) do
+    supported = Enum.map(DynamicTool.tool_specs(), & &1["name"])
+    not Enum.member?(supported, tool_name)
+  end
 
   defp port_metadata(port) when is_port(port) do
     case :erlang.port_info(port, :os_pid) do
@@ -517,9 +908,9 @@ defmodule SymphonyElixir.Claude.Cli do
 
     if text != "" do
       if String.match?(text, ~r/\b(error|warn|warning|failed|fatal|panic|exception)\b/i) do
-        Logger.warning("Claude CLI stream output: #{text}")
+        Logger.warning("Claude Code turn stream output: #{text}")
       else
-        Logger.debug("Claude CLI stream output: #{text}")
+        Logger.debug("Claude Code turn stream output: #{text}")
       end
     end
   end

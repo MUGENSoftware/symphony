@@ -94,7 +94,11 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
-          claude_command: "claude",
+          claude_command: "claude --output-format stream-json",
+          claude_approval_policy: nil,
+          claude_thread_sandbox: nil,
+          claude_turn_sandbox_policy: nil,
+          claude_read_timeout_ms: 5_000,
           claude_stall_timeout_ms: 300_000,
           hook_after_create: nil,
           hook_before_run: nil,
@@ -125,6 +129,10 @@ defmodule SymphonyElixir.TestSupport do
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     claude_command = Keyword.get(config, :claude_command)
+    claude_approval_policy = Keyword.get(config, :claude_approval_policy)
+    claude_thread_sandbox = Keyword.get(config, :claude_thread_sandbox)
+    claude_turn_sandbox_policy = Keyword.get(config, :claude_turn_sandbox_policy)
+    claude_read_timeout_ms = Keyword.get(config, :claude_read_timeout_ms)
     claude_stall_timeout_ms = Keyword.get(config, :claude_stall_timeout_ms)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
@@ -160,6 +168,10 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "claude:",
         "  command: #{yaml_value(claude_command)}",
+        "  approval_policy: #{yaml_value(claude_approval_policy)}",
+        "  thread_sandbox: #{yaml_value(claude_thread_sandbox)}",
+        "  turn_sandbox_policy: #{yaml_value(claude_turn_sandbox_policy)}",
+        "  read_timeout_ms: #{yaml_value(claude_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(claude_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),

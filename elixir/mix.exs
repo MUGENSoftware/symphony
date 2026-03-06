@@ -22,7 +22,12 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Claude.Cli,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
-          SymphonyElixir.Workspace
+          SymphonyElixir.Workspace,
+          SymphonyElixir.Web.DashboardLive,
+          SymphonyElixir.Web.Assets,
+          SymphonyElixir.Web.Layouts,
+          SymphonyElixir.Web.Endpoint,
+          SymphonyElixir.Web.ErrorJSON
         ]
       ],
       test_ignore_filters: [
@@ -49,6 +54,11 @@ defmodule SymphonyElixir.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_pubsub, "~> 2.1"},
+      {:phoenix_html, "~> 4.1"},
+      {:bandit, "~> 1.6"},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},

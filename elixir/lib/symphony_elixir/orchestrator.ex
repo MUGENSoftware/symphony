@@ -780,6 +780,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
+    Phoenix.PubSub.broadcast(SymphonyElixir.PubSub, "orchestrator:updates", :state_changed)
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do

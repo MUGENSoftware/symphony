@@ -28,10 +28,19 @@ defmodule SymphonyElixir.Config do
   @default_max_concurrent_agents 10
   @default_agent_max_turns 20
   @default_max_retry_backoff_ms 300_000
-  @default_claude_command "claude"
+  @default_claude_command "claude --output-format stream-json"
   @default_claude_turn_timeout_ms 3_600_000
+  @default_claude_read_timeout_ms 5_000
   @default_claude_stall_timeout_ms 300_000
   @default_claude_output_format "stream-json"
+  @default_claude_approval_policy %{
+    "reject" => %{
+      "sandbox_approval" => true,
+      "rules" => true,
+      "mcp_elicitations" => true
+    }
+  }
+  @default_claude_thread_sandbox "workspace-write"
   @default_observability_enabled true
   @default_observability_refresh_ms 1_000
   @default_observability_render_interval_ms 16
@@ -102,6 +111,18 @@ defmodule SymphonyElixir.Config do
                                    type: :string,
                                    default: @default_claude_output_format
                                  ],
+                                 approval_policy: [
+                                   type: :any,
+                                   default: nil
+                                 ],
+                                 thread_sandbox: [
+                                   type: {:or, [:string, nil]},
+                                   default: nil
+                                 ],
+                                 turn_sandbox_policy: [
+                                   type: :any,
+                                   default: nil
+                                 ],
                                  dangerously_skip_permissions: [type: :boolean, default: false],
                                  permission_mode: [type: {:or, [:string, nil]}, default: nil],
                                  allowed_tools: [
@@ -111,6 +132,10 @@ defmodule SymphonyElixir.Config do
                                  append_system_prompt: [type: {:or, [:string, nil]}, default: nil],
                                  mcp_config: [type: {:or, [:string, nil]}, default: nil],
                                  max_turns: [type: {:or, [:pos_integer, nil]}, default: nil],
+                                 read_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_claude_read_timeout_ms
+                                 ],
                                  turn_timeout_ms: [
                                    type: :integer,
                                    default: @default_claude_turn_timeout_ms
@@ -166,12 +191,16 @@ defmodule SymphonyElixir.Config do
           command: String.t(),
           model: String.t() | nil,
           output_format: String.t(),
+          approval_policy: map() | String.t() | nil,
+          thread_sandbox: String.t() | nil,
+          turn_sandbox_policy: map() | String.t() | nil,
           dangerously_skip_permissions: boolean(),
           permission_mode: String.t() | nil,
           allowed_tools: [String.t()] | nil,
           append_system_prompt: String.t() | nil,
           mcp_config: String.t() | nil,
           max_turns: pos_integer() | nil,
+          read_timeout_ms: pos_integer(),
           turn_timeout_ms: pos_integer(),
           stall_timeout_ms: non_neg_integer()
         }
@@ -298,6 +327,32 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:claude, :output_format])
   end
 
+  @spec claude_approval_policy() :: map() | String.t()
+  def claude_approval_policy do
+    validated_workflow_options()
+    |> get_in([:claude, :approval_policy])
+    |> normalize_claude_approval_policy()
+  end
+
+  @spec claude_thread_sandbox() :: String.t()
+  def claude_thread_sandbox do
+    validated_workflow_options()
+    |> get_in([:claude, :thread_sandbox])
+    |> normalize_claude_thread_sandbox()
+  end
+
+  @spec claude_turn_sandbox_policy() :: map()
+  def claude_turn_sandbox_policy do
+    claude_turn_sandbox_policy(nil)
+  end
+
+  @spec claude_turn_sandbox_policy(String.t() | nil) :: map()
+  def claude_turn_sandbox_policy(workspace) do
+    validated_workflow_options()
+    |> get_in([:claude, :turn_sandbox_policy])
+    |> normalize_claude_turn_sandbox_policy(workspace)
+  end
+
   @spec claude_dangerously_skip_permissions?() :: boolean()
   def claude_dangerously_skip_permissions? do
     get_in(validated_workflow_options(), [:claude, :dangerously_skip_permissions]) || false
@@ -326,6 +381,11 @@ defmodule SymphonyElixir.Config do
   @spec claude_max_turns() :: pos_integer() | nil
   def claude_max_turns do
     get_in(validated_workflow_options(), [:claude, :max_turns])
+  end
+
+  @spec claude_read_timeout_ms() :: pos_integer()
+  def claude_read_timeout_ms do
+    get_in(validated_workflow_options(), [:claude, :read_timeout_ms])
   end
 
   @spec claude_turn_timeout_ms() :: pos_integer()
@@ -387,7 +447,10 @@ defmodule SymphonyElixir.Config do
     with {:ok, _workflow} <- current_workflow(),
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
-         :ok <- require_linear_project() do
+         :ok <- require_linear_project(),
+         :ok <- validate_claude_approval_policy(),
+         :ok <- validate_claude_thread_sandbox(),
+         :ok <- validate_claude_turn_sandbox_policy() do
       require_claude_command()
     end
   end
@@ -492,12 +555,19 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:command, command_value(Map.get(section, "command")))
     |> put_if_present(:model, scalar_string_value(Map.get(section, "model")))
     |> put_if_present(:output_format, scalar_string_value(Map.get(section, "output_format")))
+    |> put_if_present(:approval_policy, claude_approval_policy_value(Map.get(section, "approval_policy")))
+    |> put_if_present(:thread_sandbox, scalar_string_value(Map.get(section, "thread_sandbox")))
+    |> put_if_present(
+      :turn_sandbox_policy,
+      claude_turn_sandbox_policy_value(Map.get(section, "turn_sandbox_policy"))
+    )
     |> put_if_present(:dangerously_skip_permissions, boolean_value(Map.get(section, "dangerously_skip_permissions")))
     |> put_if_present(:permission_mode, scalar_string_value(Map.get(section, "permission_mode")))
     |> put_if_present(:allowed_tools, csv_value(Map.get(section, "allowed_tools")))
     |> put_if_present(:append_system_prompt, binary_value(Map.get(section, "append_system_prompt")))
     |> put_if_present(:mcp_config, binary_value(Map.get(section, "mcp_config")))
     |> put_if_present(:max_turns, positive_integer_value(Map.get(section, "max_turns")))
+    |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
   end
@@ -690,6 +760,16 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp claude_approval_policy_value(value) when is_map(value), do: normalize_keys(value)
+  defp claude_approval_policy_value(value) when is_binary(value), do: String.trim(value)
+  defp claude_approval_policy_value(nil), do: :omit
+  defp claude_approval_policy_value(_value), do: :omit
+
+  defp claude_turn_sandbox_policy_value(value) when is_map(value), do: normalize_keys(value)
+  defp claude_turn_sandbox_policy_value(value) when is_binary(value), do: String.trim(value)
+  defp claude_turn_sandbox_policy_value(nil), do: :omit
+  defp claude_turn_sandbox_policy_value(_value), do: :omit
+
   defp fetch_value(paths, default) do
     config = workflow_config()
 
@@ -699,6 +779,69 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp validate_claude_approval_policy do
+    case fetch_value([["claude", "approval_policy"]], :missing) do
+      :missing -> :ok
+      nil -> :ok
+      "" -> {:error, {:invalid_claude_approval_policy, ""}}
+      value when is_binary(value) -> :ok
+      value when is_map(value) -> :ok
+      value -> {:error, {:invalid_claude_approval_policy, value}}
+    end
+  end
+
+  defp validate_claude_thread_sandbox do
+    case fetch_value([["claude", "thread_sandbox"]], :missing) do
+      :missing -> :ok
+      nil -> :ok
+      "" -> {:error, {:invalid_claude_thread_sandbox, ""}}
+      value when is_binary(value) -> :ok
+      value -> {:error, {:invalid_claude_thread_sandbox, value}}
+    end
+  end
+
+  defp validate_claude_turn_sandbox_policy do
+    case fetch_value([["claude", "turn_sandbox_policy"]], :missing) do
+      :missing -> :ok
+      nil -> :ok
+      value when is_map(value) -> :ok
+      value when is_binary(value) -> {:error, {:invalid_claude_turn_sandbox_policy, {:unsupported_value, value}}}
+      value -> {:error, {:invalid_claude_turn_sandbox_policy, {:unsupported_value, value}}}
+    end
+  end
+
+  defp normalize_claude_approval_policy(nil), do: @default_claude_approval_policy
+  defp normalize_claude_approval_policy(""), do: @default_claude_approval_policy
+  defp normalize_claude_approval_policy(value) when is_binary(value), do: String.trim(value)
+  defp normalize_claude_approval_policy(value) when is_map(value), do: normalize_keys(value)
+  defp normalize_claude_approval_policy(_value), do: @default_claude_approval_policy
+
+  defp normalize_claude_thread_sandbox(nil), do: @default_claude_thread_sandbox
+  defp normalize_claude_thread_sandbox(""), do: @default_claude_thread_sandbox
+  defp normalize_claude_thread_sandbox(value) when is_binary(value), do: String.trim(value)
+  defp normalize_claude_thread_sandbox(_value), do: @default_claude_thread_sandbox
+
+  defp normalize_claude_turn_sandbox_policy(nil, workspace), do: default_turn_sandbox_policy(workspace)
+  defp normalize_claude_turn_sandbox_policy("", workspace), do: default_turn_sandbox_policy(workspace)
+  defp normalize_claude_turn_sandbox_policy(value, _workspace) when is_map(value), do: normalize_keys(value)
+  defp normalize_claude_turn_sandbox_policy(_value, workspace), do: default_turn_sandbox_policy(workspace)
+
+  defp default_turn_sandbox_policy(nil) do
+    default_turn_sandbox_policy(workspace_root())
+  end
+
+  defp default_turn_sandbox_policy(workspace) when is_binary(workspace) do
+    expanded_workspace = Path.expand(workspace)
+
+    %{
+      "type" => "workspaceWrite",
+      "writableRoots" => [expanded_workspace],
+      "readOnlyAccess" => %{"type" => "fullAccess"},
+      "networkAccess" => false,
+      "excludeTmpdirEnvVar" => false,
+      "excludeSlashTmp" => false
+    }
+  end
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name
