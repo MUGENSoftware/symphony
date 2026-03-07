@@ -37,14 +37,10 @@ description:
      the configured remote, stop and surface the exact error instead of
      rewriting remotes or switching protocols as a workaround.
 
-5. Ensure a PR exists for the branch:
-   - If no PR exists, create one.
-   - If a PR exists and is open, update it.
-   - If branch is tied to a closed/merged PR, create a new branch + PR.
-   - Write a proper PR title that clearly describes the change outcome
-   - For branch updates, explicitly reconsider whether current PR title still
-     matches the latest scope; update it if it no longer does.
-6. Write/update PR body explicitly using `.github/pull_request_template.md`:
+5. Resolve the GitHub default base branch explicitly:
+   - Use `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`.
+   - Do not rely on implicit base branch selection.
+6. Draft the PR body into a temp file from `.github/pull_request_template.md`:
    - Fill every section with concrete content for this change.
    - Replace all placeholder comments (`<!-- ... -->`).
    - Keep bullets/checkboxes where template expects them.
@@ -52,8 +48,23 @@ description:
      scope (all intended work on the branch), not just the newest commits,
      including newly added work, removed work, or changed approach.
    - Do not reuse stale description text from earlier iterations.
-7. Validate PR body with `mix pr_body.check` and fix all reported issues.
-8. Reply with the PR URL from `gh pr view`.
+7. Validate the drafted PR body with `mix pr_body.check` before any PR
+   create/edit command. If validation fails, stop and surface the error.
+8. Ensure a PR exists for the branch:
+   - If no PR exists, create one.
+   - If a PR exists and is open, update it.
+   - If branch is tied to a closed/merged PR, create a new branch + PR.
+   - Write a proper PR title that clearly describes the change outcome.
+   - For branch updates, explicitly reconsider whether current PR title still
+     matches the latest scope; update it if it no longer does.
+9. Run PR create/edit non-interactively:
+   - Never rely on `gh` prompts, editor launch, or interactive template
+     selection.
+   - Use explicit `--base`, `--title`, and `--body-file` flags.
+10. Verify PR publication by reading back the PR URL with `gh pr view`.
+    If URL retrieval fails, treat the publish step as failed and surface the
+    exact error.
+11. Reply with the PR URL from `gh pr view`.
 
 ## Commands
 
@@ -77,35 +88,43 @@ git push -u origin HEAD
 # Only if history was rewritten locally:
 git push --force-with-lease origin HEAD
 
-# Ensure a PR exists (create only if missing)
-pr_state=$(gh pr view --json state -q .state 2>/dev/null || true)
+# Resolve the repo default base branch explicitly.
+base_branch=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)
+
+# Draft the PR body from the repo template and replace placeholders with
+# concrete content for this change before validation.
+tmp_pr_body=$(mktemp)
+cp .github/pull_request_template.md "$tmp_pr_body"
+
+# Edit "$tmp_pr_body" so every section is filled with concrete content and
+# placeholder comments are removed before continuing.
+
+# Validate the final PR body before any create/edit call.
+(cd elixir && mix pr_body.check --file "$tmp_pr_body")
+
+# Ensure a PR exists (create only if missing).
+pr_state=$(gh pr view --json state,url -q .state 2>/dev/null || true)
 if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
   echo "Current branch is tied to a closed PR; create a new branch + PR." >&2
+  rm -f "$tmp_pr_body"
   exit 1
 fi
 
 # Write a clear, human-friendly title that summarizes the shipped change.
 pr_title="<clear PR title written for this change>"
 if [ -z "$pr_state" ]; then
-  gh pr create --title "$pr_title"
+  gh pr create --base "$base_branch" --title "$pr_title" --body-file "$tmp_pr_body"
 else
-  # Reconsider title on every branch update; edit if scope shifted.
-  gh pr edit --title "$pr_title"
+  # Reconsider title on every branch update; edit if scope shifted. Keep the
+  # update non-interactive by always providing the body file as well.
+  gh pr edit --title "$pr_title" --body-file "$tmp_pr_body"
 fi
 
-# Write/edit PR body to match .github/pull_request_template.md before validation.
-# Example workflow:
-# 1) open the template and draft body content for this PR
-# 2) gh pr edit --body-file /tmp/pr_body.md
-# 3) for branch updates, re-check that title/body still match current diff
-
-tmp_pr_body=$(mktemp)
-gh pr view --json body -q .body > "$tmp_pr_body"
-(cd elixir && mix pr_body.check --file "$tmp_pr_body")
+# Verify publication immediately. If this fails, treat publish as failed rather
+# than assuming PR creation succeeded.
+pr_url=$(gh pr view --json url -q .url)
+printf '%s\n' "$pr_url"
 rm -f "$tmp_pr_body"
-
-# Show PR URL for the reply
-gh pr view --json url -q .url
 ```
 
 ## Notes
@@ -115,3 +134,5 @@ gh pr view --json url -q .url
   - Use the `pull` skill for non-fast-forward or stale-branch issues.
   - Surface auth, permissions, or workflow restrictions directly instead of
     changing remotes or protocols.
+- Do not use `gh pr create` in a way that can prompt for missing inputs.
+  PR creation/edit must stay fully non-interactive.
