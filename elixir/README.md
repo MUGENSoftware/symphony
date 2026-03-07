@@ -5,54 +5,33 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 > [!WARNING]
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
-> We recommend implementing your own hardened version based on `SPEC.md`.
+> It runs Claude Code without the usual guardrails. Use it only in trusted environments.
 
-## Screenshot
+## What It Does
 
-![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+Symphony is a long-running service that:
 
-## How it works
+1. polls Linear for candidate issues,
+2. creates one isolated workspace per issue,
+3. launches Claude Code inside that workspace,
+4. feeds Claude a workflow prompt from `WORKFLOW.md`,
+5. keeps retrying or continuing work while the issue remains active,
+6. cleans up workspaces when issues become terminal.
 
-1. Polls Linear for candidate work
-2. Creates an isolated workspace per issue
-3. Launches Claude Code CLI inside the workspace
-4. Sends a workflow prompt to Claude Code
-5. Keeps Claude Code working on the issue until the work is done
+If you do not know Elixir, the important mental model is "scheduler plus workers":
 
-During Claude Code CLI sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+- the scheduler is the orchestrator loop,
+- the workers are Claude Code sessions running per issue,
+- the workflow file is the runtime contract,
+- the dashboard and logs are the main debugging surfaces.
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+## Five-Minute Local Run
 
-## How to use it
+Prerequisites:
 
-1. Make sure your codebase is set up to work well with agents: see
-   [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` CLI tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
-6. Follow the instructions below to install the required runtime dependencies and start the service.
-
-## Prerequisites
-
-We recommend using [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions.
-
-```bash
-mise install
-mise exec -- elixir --version
-```
-
-## Run
+- [mise](https://mise.jdx.dev/) for Erlang/Elixir version management
+- a Linear personal API key in `LINEAR_API_KEY`
+- a `WORKFLOW.md` that can clone and prepare your target repository
 
 ```bash
 git clone https://github.com/openai/symphony
@@ -61,117 +40,90 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+LINEAR_API_KEY=lin_api_xxx \
+  mise exec -- ./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  ./WORKFLOW.md
 ```
 
-## Configuration
-
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+To enable the HTTP dashboard and JSON API locally:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+LINEAR_API_KEY=lin_api_xxx \
+  mise exec -- ./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  --port 4000 \
+  ./WORKFLOW.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+## Minimal `WORKFLOW.md`
 
-Optional flags:
-
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
-- `--port` also starts the HTTP observability service (default: disabled)
-
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Claude Code session prompt.
-
-Minimal example:
+`WORKFLOW.md` is the main public interface for the runtime. It combines YAML front matter for config
+with a Markdown prompt body for Claude.
 
 ```md
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  project_slug: "your-linear-project-slug"
 workspace:
-  root: ~/code/workspaces
+  root: ~/code/symphony-workspaces
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
 claude:
-  command: claude
+  command: claude --output-format stream-json
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on Linear issue {{ issue.identifier }}.
 
-Title: {{ issue.title }} Body: {{ issue.description }}
+Title: {{ issue.title }}
+
+Body:
+{{ issue.description }}
 ```
 
-Notes:
+If you omit the Markdown body, Symphony falls back to a built-in prompt template that includes the
+issue identifier, title, and body.
 
-- If a value is missing, defaults are used.
-- Safer Claude Code defaults are used when policy fields are omitted:
-  - `claude.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
-  - `claude.thread_sandbox` defaults to `workspace-write`
-  - `claude.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
-- Supported `claude.approval_policy` values depend on the targeted Claude Code CLI version. In the current local Claude Code schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
-- Supported `claude.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- Supported `claude.turn_sandbox_policy.type` values: `dangerFullAccess`, `readOnly`,
-  `externalSandbox`, `workspaceWrite`.
-- `agent.max_turns` caps how many back-to-back Claude Code turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
-  identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
-- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
-  the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
-- For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
-  while `claude.command` stays a shell command string and any `$VAR` expansion there happens in the
-  launched shell.
+## Runtime Entry Points
 
-```yaml
-tracker:
-  api_key: $LINEAR_API_KEY
-workspace:
-  root: $SYMPHONY_WORKSPACE_ROOT
-hooks:
-  after_create: |
-    git clone --depth 1 "$SOURCE_REPO_URL" .
-claude:
-  command: "$CLAUDE_BIN --model claude-sonnet-4-20250514"
+- `./bin/symphony [path-to-WORKFLOW.md]`
+- `--logs-root <path>` writes log files under a different root
+- `--port <port>` enables the optional Phoenix/Bandit dashboard and JSON API
+- if no workflow path is passed, Symphony uses `./WORKFLOW.md`
+
+The CLI requires the explicit acknowledgement flag:
+
+```bash
+--i-understand-that-this-will-be-running-without-the-usual-guardrails
 ```
 
-- If `WORKFLOW.md` is missing or has invalid YAML, startup and scheduling are halted until fixed.
-- `server.port` or CLI `--port` enables the optional HTTP dashboard and JSON API at `/`,
-  `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+## Documentation Map
 
-## Project Layout
+Operator guides:
 
-- `lib/`: application code and Mix tasks
-- `test/`: ExUnit coverage for runtime behavior
-- `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `../.claude/`: repository-local Claude Code skills and setup helpers
+- [Getting Started](./docs/getting-started.md)
+- [Workflow Reference](./docs/workflow-reference.md)
+- [Operations Guide](./docs/operations.md)
+- [Troubleshooting](./docs/troubleshooting.md)
+
+Contributor guides:
+
+- [Architecture Overview](./docs/architecture-overview.md)
+- [Code Map](./docs/code-map.md)
+- [Elixir For Readers](./docs/elixir-for-readers.md)
+
+Specialized notes:
+
+- [Logging Best Practices](./docs/logging.md)
+- [Claude Code Token Accounting](./docs/token_accounting.md)
 
 ## Testing
 
 ```bash
 make all
 ```
-
-## FAQ
-
-### Why Elixir?
-
-Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an
-active ecosystem of tools and libraries. It also supports hot code reloading without stopping
-actively running subagents, which is very useful during development.
-
-### What's the easiest way to set this up for my own codebase?
-
-Launch `claude` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
-you.
 
 ## License
 
