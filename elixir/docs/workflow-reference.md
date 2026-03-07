@@ -228,6 +228,10 @@ Fields:
 - `command`
   - required in practice
   - default: `claude --output-format stream-json`
+  - parsed as an executable plus arguments and launched directly
+  - bare executables such as `claude` are resolved from the runtime `PATH`, with a login-shell
+    fallback for PATH initialization
+  - absolute paths are the most deterministic option
 - `model`
   - optional
   - default: `nil`
@@ -264,6 +268,10 @@ Fields:
 - `mcp_config`
   - optional
   - default: `nil`
+  - advanced override for a custom Claude MCP config file
+  - if omitted for `tracker.kind: linear` in `stream-json` mode, Symphony generates a default MCP
+    config for the blessed official Linear MCP server
+  - when set, the file must exist, be readable, and contain valid JSON
 - `max_turns`
   - optional
   - default: `nil`

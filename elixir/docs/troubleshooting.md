@@ -70,11 +70,27 @@ The orchestrator is alive, but one of the dispatch preconditions is failing.
 
 ### What To Check
 
+- `log/linear-pull.log` for `fetch_start`, `fetch_success`, or `fetch_failure`
+- `log/claude.mcp.json` for the generated default Claude MCP config when using the built-in
+  stream-json Linear integration path
 - `tracker.kind` is present and supported
 - `LINEAR_API_KEY` or `tracker.api_key` is set
 - `tracker.project_slug` is present
 - `claude.command` is non-empty
 - `agent.max_concurrent_agents` is not effectively exhausted by already-running issues
+
+If Linear tools are missing inside Claude:
+
+- confirm Symphony logged `Claude MCP config ready`
+- if you rely on the default path, confirm `log/claude.mcp.json` exists and points to `https://mcp.linear.app/mcp`
+- if you set `claude.mcp_config`, confirm the override file exists and contains valid JSON
+
+If `linear-pull.log` shows repeated `fetch_failure` entries:
+
+- check `reason` and `status` first
+- if `reason=:linear_graphql_errors`, inspect the `graphql_errors` summary in that same line
+- if the log has `fetch_start` but no `fetch_success`, the request likely failed or the payload was
+  not decodable
 
 ## Workspace Gets Created But Claude Never Does Useful Work
 
@@ -91,7 +107,9 @@ The failure usually happened in a workspace hook or in Claude process startup.
 
 - `after_create` clones the repository successfully in a brand-new empty directory
 - `before_run` commands succeed in that same workspace
-- the `claude.command` is available in the hook environment
+- the `claude.command` executable can be resolved in the Symphony runtime environment
+- if `claude.command` is just `claude`, verify whether your login shell PATH includes the Claude
+  binary while the parent process PATH does not
 - hook output in logs for non-zero exit codes or timeouts
 
 ## Hook Timeouts Or Hook Failures

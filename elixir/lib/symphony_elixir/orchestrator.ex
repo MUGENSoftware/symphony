@@ -197,6 +197,22 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Claude command missing in WORKFLOW.md")
         state
 
+      {:error, {:claude_mcp_config_not_found, path}} ->
+        Logger.error("Claude MCP config override not found at #{path}")
+        state
+
+      {:error, {:claude_mcp_config_unreadable, path, reason}} ->
+        Logger.error("Claude MCP config override unreadable at #{path}: #{inspect(reason)}")
+        state
+
+      {:error, {:invalid_claude_mcp_config_json, path, reason}} ->
+        Logger.error("Claude MCP config override is invalid JSON at #{path}: #{inspect(reason)}")
+        state
+
+      {:error, {:claude_default_mcp_config_write_failed, path, reason}} ->
+        Logger.error("Failed to write default Claude MCP config at #{path}: #{inspect(reason)}")
+        state
+
       {:error, {:missing_workflow_file, path, reason}} ->
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
         state

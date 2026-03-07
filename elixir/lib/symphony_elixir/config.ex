@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Config do
   """
 
   alias NimbleOptions
+  alias SymphonyElixir.Claude.McpConfig
   alias SymphonyElixir.Workflow
 
   @default_active_states ["Todo", "In Progress"]
@@ -450,8 +451,10 @@ defmodule SymphonyElixir.Config do
          :ok <- require_linear_project(),
          :ok <- validate_claude_approval_policy(),
          :ok <- validate_claude_thread_sandbox(),
-         :ok <- validate_claude_turn_sandbox_policy() do
-      require_claude_command()
+         :ok <- validate_claude_turn_sandbox_policy(),
+         :ok <- require_claude_command(),
+         :ok <- validate_claude_mcp_config() do
+      :ok
     end
   end
 
@@ -500,6 +503,33 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp validate_claude_mcp_config do
+    mode = claude_mode_for_validation(claude_command())
+
+    case McpConfig.ensure_ready(mode) do
+      {:ok, _details} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp claude_mode_for_validation(command) when is_binary(command) do
+    try do
+      case OptionParser.split(command) do
+        args when is_list(args) ->
+          if Enum.any?(args, &(&1 == "app-server")) do
+            :app_server
+          else
+            :stream_json
+          end
+
+        _ ->
+          :stream_json
+      end
+    rescue
+      _error -> :stream_json
+    end
+  end
+
   defp validated_workflow_options do
     workflow_config()
     |> extract_workflow_options()
@@ -525,6 +555,7 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:endpoint, scalar_string_value(Map.get(section, "endpoint")))
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
     |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
+    |> put_if_present(:assignee, scalar_string_value(Map.get(section, "assignee")))
     |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))
     |> put_if_present(:terminal_states, csv_value(Map.get(section, "terminal_states")))
   end

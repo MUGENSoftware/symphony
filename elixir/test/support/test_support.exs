@@ -98,6 +98,7 @@ defmodule SymphonyElixir.TestSupport do
           claude_approval_policy: nil,
           claude_thread_sandbox: nil,
           claude_turn_sandbox_policy: nil,
+          claude_mcp_config: nil,
           claude_read_timeout_ms: 5_000,
           claude_stall_timeout_ms: 300_000,
           hook_after_create: nil,
@@ -132,6 +133,7 @@ defmodule SymphonyElixir.TestSupport do
     claude_approval_policy = Keyword.get(config, :claude_approval_policy)
     claude_thread_sandbox = Keyword.get(config, :claude_thread_sandbox)
     claude_turn_sandbox_policy = Keyword.get(config, :claude_turn_sandbox_policy)
+    claude_mcp_config = Keyword.get(config, :claude_mcp_config)
     claude_read_timeout_ms = Keyword.get(config, :claude_read_timeout_ms)
     claude_stall_timeout_ms = Keyword.get(config, :claude_stall_timeout_ms)
     hook_after_create = Keyword.get(config, :hook_after_create)
@@ -171,6 +173,7 @@ defmodule SymphonyElixir.TestSupport do
         "  approval_policy: #{yaml_value(claude_approval_policy)}",
         "  thread_sandbox: #{yaml_value(claude_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(claude_turn_sandbox_policy)}",
+        "  mcp_config: #{yaml_value(claude_mcp_config)}",
         "  read_timeout_ms: #{yaml_value(claude_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(claude_stall_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),

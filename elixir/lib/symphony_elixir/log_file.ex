@@ -7,6 +7,7 @@ defmodule SymphonyElixir.LogFile do
 
   @handler_id :symphony_disk_log
   @default_log_relative_path "log/symphony.log"
+  @default_linear_pull_log_relative_path "log/linear-pull.log"
   @default_max_bytes 10 * 1024 * 1024
   @default_max_files 5
 
@@ -18,6 +19,23 @@ defmodule SymphonyElixir.LogFile do
   @spec default_log_file(Path.t()) :: Path.t()
   def default_log_file(logs_root) when is_binary(logs_root) do
     Path.join(logs_root, @default_log_relative_path)
+  end
+
+  @spec default_linear_pull_log_file() :: Path.t()
+  def default_linear_pull_log_file do
+    default_linear_pull_log_file(File.cwd!())
+  end
+
+  @spec default_linear_pull_log_file(Path.t()) :: Path.t()
+  def default_linear_pull_log_file(logs_root) when is_binary(logs_root) do
+    Path.join(logs_root, @default_linear_pull_log_relative_path)
+  end
+
+  @spec set_logs_root(Path.t()) :: :ok
+  def set_logs_root(logs_root) when is_binary(logs_root) do
+    Application.put_env(:symphony_elixir, :log_file, default_log_file(logs_root))
+    Application.put_env(:symphony_elixir, :linear_pull_log_file, default_linear_pull_log_file(logs_root))
+    :ok
   end
 
   @spec configure() :: :ok

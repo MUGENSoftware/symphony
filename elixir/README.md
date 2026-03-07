@@ -73,6 +73,9 @@ hooks:
     git clone git@github.com:your-org/your-repo.git .
 claude:
   command: claude --output-format stream-json
+  # Optional advanced override for a custom MCP server config.
+  # If omitted, Symphony generates a default Linear MCP config.
+  # mcp_config: /absolute/path/to/custom-claude.mcp.json
 ---
 
 You are working on Linear issue {{ issue.identifier }}.
@@ -85,6 +88,10 @@ Body:
 
 If you omit the Markdown body, Symphony falls back to a built-in prompt template that includes the
 issue identifier, title, and body.
+
+For `tracker.kind: linear`, Symphony's default `stream-json` path automatically wires the blessed
+Linear MCP server when `LINEAR_API_KEY` or `tracker.api_key` is available. `claude.mcp_config`
+is only needed when you want to override that default.
 
 ## Runtime Entry Points
 

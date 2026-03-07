@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   require Logger
   alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.Linear.PullLog
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
@@ -106,30 +107,17 @@ defmodule SymphonyElixir.Linear.Client do
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     project_slug = Config.linear_project_slug()
+    active_states = Config.linear_active_states()
+    configured_assignee = Config.linear_assignee()
 
-    cond do
-      is_nil(Config.linear_api_token()) ->
-        {:error, :missing_linear_api_token}
+    log_fetch_start("candidate_issues",
+      project_slug: project_slug,
+      states: active_states,
+      configured_assignee: configured_assignee,
+      assignee_mode: assignee_mode(configured_assignee)
+    )
 
-      is_nil(project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      true ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(project_slug, Config.linear_active_states(), assignee_filter)
-        end
-    end
-  end
-
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(state_names) when is_list(state_names) do
-    normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
-
-    if normalized_states == [] do
-      {:ok, []}
-    else
-      project_slug = Config.linear_project_slug()
-
+    result =
       cond do
         is_nil(Config.linear_api_token()) ->
           {:error, :missing_linear_api_token}
@@ -138,31 +126,90 @@ defmodule SymphonyElixir.Linear.Client do
           {:error, :missing_linear_project_slug}
 
         true ->
-          do_fetch_by_states(project_slug, normalized_states, nil)
+          with {:ok, assignee_filter} <- routing_assignee_filter(),
+               {:ok, issues} <-
+                 do_fetch_by_states(
+                   "candidate_issues",
+                   project_slug,
+                   active_states,
+                   assignee_filter
+                 ) do
+            {:ok, issues}
+          end
       end
+
+    log_fetch_result(
+      "candidate_issues",
+      result,
+      project_slug: project_slug,
+      states: active_states,
+      configured_assignee: configured_assignee
+    )
+
+    result
+  end
+
+  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names) when is_list(state_names) do
+    normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
+
+    if normalized_states == [] do
+      log_fetch_start("issues_by_states", states: normalized_states)
+      log_fetch_result("issues_by_states", {:ok, []}, states: normalized_states)
+      {:ok, []}
+    else
+      project_slug = Config.linear_project_slug()
+      log_fetch_start("issues_by_states", project_slug: project_slug, states: normalized_states)
+
+      result =
+        cond do
+          is_nil(Config.linear_api_token()) ->
+            {:error, :missing_linear_api_token}
+
+          is_nil(project_slug) ->
+            {:error, :missing_linear_project_slug}
+
+          true ->
+            do_fetch_by_states("issues_by_states", project_slug, normalized_states, nil)
+        end
+
+      log_fetch_result(
+        "issues_by_states",
+        result,
+        project_slug: project_slug,
+        states: normalized_states
+      )
+
+      result
     end
   end
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
     ids = Enum.uniq(issue_ids)
+    log_fetch_start("issue_states_by_ids", issue_ids: ids)
 
-    case ids do
-      [] ->
-        {:ok, []}
+    result =
+      case ids do
+        [] ->
+          {:ok, []}
 
-      ids ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_issue_states(ids, assignee_filter)
-        end
-    end
+        ids ->
+          with {:ok, assignee_filter} <- routing_assignee_filter(),
+               {:ok, issues} <- do_fetch_issue_states(ids, assignee_filter) do
+            {:ok, issues}
+          end
+      end
+
+    log_fetch_result("issue_states_by_ids", result, issue_ids: ids)
+    result
   end
 
   @spec graphql(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def graphql(query, variables \\ %{}, opts \\ [])
       when is_binary(query) and is_map(variables) and is_list(opts) do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))
-    request_fun = Keyword.get(opts, :request_fun, &post_graphql_request/2)
+    request_fun = Keyword.get(opts, :request_fun, graphql_request_fun())
 
     with {:ok, headers} <- graphql_headers(),
          {:ok, %{status: 200, body: body}} <- request_fun.(payload, headers) do
@@ -218,11 +265,28 @@ defmodule SymphonyElixir.Linear.Client do
     |> finalize_paginated_issues()
   end
 
-  defp do_fetch_by_states(project_slug, state_names, assignee_filter) do
-    do_fetch_by_states_page(project_slug, state_names, assignee_filter, nil, [])
+  defp do_fetch_by_states(operation, project_slug, state_names, assignee_filter) do
+    do_fetch_by_states_page(operation, project_slug, state_names, assignee_filter, nil, [], 1)
   end
 
-  defp do_fetch_by_states_page(project_slug, state_names, assignee_filter, after_cursor, acc_issues) do
+  defp do_fetch_by_states_page(
+         operation,
+         project_slug,
+         state_names,
+         assignee_filter,
+         after_cursor,
+         acc_issues,
+         page_number
+       ) do
+    PullLog.log(:page_fetch_start,
+      operation: operation,
+      page: page_number,
+      project_slug: project_slug,
+      states: state_names,
+      after_cursor: after_cursor,
+      assignee_mode: assignee_mode(assignee_filter)
+    )
+
     with {:ok, body} <-
            graphql(@query, %{
              projectSlug: project_slug,
@@ -233,17 +297,51 @@ defmodule SymphonyElixir.Linear.Client do
            }),
          {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
       updated_acc = prepend_page_issues(issues, acc_issues)
+      PullLog.log(:page_fetch_result,
+        operation: operation,
+        page: page_number,
+        project_slug: project_slug,
+        states: state_names,
+        issue_count: length(issues),
+        issue_identifiers: Enum.map(issues, & &1.identifier),
+        has_next_page: page_info.has_next_page,
+        next_cursor: page_info.end_cursor
+      )
 
       case next_page_cursor(page_info) do
         {:ok, next_cursor} ->
-          do_fetch_by_states_page(project_slug, state_names, assignee_filter, next_cursor, updated_acc)
+          do_fetch_by_states_page(
+            operation,
+            project_slug,
+            state_names,
+            assignee_filter,
+            next_cursor,
+            updated_acc,
+            page_number + 1
+          )
 
         :done ->
           {:ok, finalize_paginated_issues(updated_acc)}
 
         {:error, reason} ->
+          log_fetch_failure(operation, reason,
+            project_slug: project_slug,
+            states: state_names,
+            page: page_number
+          )
+
           {:error, reason}
       end
+    else
+      {:error, reason} ->
+        log_fetch_failure(operation, reason,
+          project_slug: project_slug,
+          states: state_names,
+          page: page_number,
+          after_cursor: after_cursor
+        )
+
+        {:error, reason}
     end
   end
 
@@ -336,6 +434,10 @@ defmodule SymphonyElixir.Linear.Client do
            {"Content-Type", "application/json"}
          ]}
     end
+  end
+
+  defp graphql_request_fun do
+    Application.get_env(:symphony_elixir, :linear_graphql_request_fun, &post_graphql_request/2)
   end
 
   defp post_graphql_request(payload, headers) do
@@ -455,23 +557,105 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp resolve_viewer_assignee_filter do
+    PullLog.log(:viewer_lookup_start, configured_assignee: "me")
+
     case graphql(@viewer_query, %{}) do
       {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
         case assignee_id(viewer) do
           nil ->
+            log_fetch_failure("viewer_lookup", :missing_linear_viewer_identity,
+              configured_assignee: "me"
+            )
+
             {:error, :missing_linear_viewer_identity}
 
           viewer_id ->
+            PullLog.log(:viewer_lookup_success,
+              configured_assignee: "me",
+              viewer_id: viewer_id
+            )
+
             {:ok, %{configured_assignee: "me", match_values: MapSet.new([viewer_id])}}
         end
 
       {:ok, _body} ->
+        log_fetch_failure("viewer_lookup", :missing_linear_viewer_identity,
+          configured_assignee: "me"
+        )
+
         {:error, :missing_linear_viewer_identity}
 
       {:error, reason} ->
+        log_fetch_failure("viewer_lookup", reason, configured_assignee: "me")
         {:error, reason}
     end
   end
+
+  defp log_fetch_start(operation, fields) when is_binary(operation) do
+    PullLog.log(:fetch_start, Map.put(Map.new(fields), :operation, operation))
+  end
+
+  defp log_fetch_result(operation, {:ok, issues}, fields)
+       when is_binary(operation) and is_list(issues) do
+    PullLog.log(
+      :fetch_success,
+      fields
+      |> Map.new()
+      |> Map.merge(%{
+        operation: operation,
+        issue_count: length(issues),
+        issue_ids: Enum.map(issues, & &1.id),
+        issue_identifiers: Enum.map(issues, & &1.identifier)
+      })
+    )
+  end
+
+  defp log_fetch_result(operation, {:error, reason}, fields) when is_binary(operation) do
+    log_fetch_failure(operation, reason, fields)
+  end
+
+  defp log_fetch_failure(operation, reason, fields) when is_binary(operation) do
+    PullLog.log(
+      :fetch_failure,
+      fields
+      |> Map.new()
+      |> Map.put(:operation, operation)
+      |> Map.merge(failure_fields(reason))
+    )
+  end
+
+  defp failure_fields({:linear_api_status, status}) do
+    %{reason: :linear_api_status, status: status}
+  end
+
+  defp failure_fields({:linear_api_request, reason}) do
+    %{reason: :linear_api_request, error: inspect(reason)}
+  end
+
+  defp failure_fields({:linear_graphql_errors, errors}) do
+    %{reason: :linear_graphql_errors, graphql_errors: summarize_graphql_errors(errors)}
+  end
+
+  defp failure_fields(reason) do
+    %{reason: inspect(reason)}
+  end
+
+  defp summarize_graphql_errors(errors) when is_list(errors) do
+    Enum.map(errors, fn
+      %{"message" => message} -> message
+      error -> inspect(error)
+    end)
+  end
+
+  defp summarize_graphql_errors(errors), do: inspect(errors)
+
+  defp assignee_mode(nil), do: "unfiltered"
+  defp assignee_mode("me"), do: "viewer"
+  defp assignee_mode(value) when is_binary(value), do: "configured"
+
+  defp assignee_mode(%{configured_assignee: "me"}), do: "viewer"
+  defp assignee_mode(%{configured_assignee: _value}), do: "configured"
+  defp assignee_mode(_value), do: "unfiltered"
 
   defp normalize_assignee_match_value(value) when is_binary(value) do
     case value |> String.trim() do

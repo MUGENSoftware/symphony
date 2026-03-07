@@ -29,9 +29,12 @@ agent:
   max_concurrent_agents: 10
   max_turns: 10
 claude:
-  command: path/to/exec.sh
+  command: claude
   model: opus
   output_format: stream-json
+  # Optional advanced override. If omitted, Symphony generates a default
+  # MCP config for the blessed Linear server automatically.
+  # mcp_config: /absolute/path/to/custom-claude.mcp.json
   dangerously_skip_permissions: true
   max_turns: 10
 ---
@@ -69,9 +72,10 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: Linear tools are available through MCP
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+In `stream-json` sessions, Symphony provides Linear access through the configured MCP server.
+If no Linear MCP tools are available, stop and report that the MCP setup is missing or broken.
 
 ## Operating profile: Balanced (default)
 
@@ -91,7 +95,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Related skills
 
-- `linear`: interact with Linear.
+- `linear`: optional repository guidance for raw Linear GraphQL work when MCP tools are present.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
 - `pull`: keep branch updated with latest `origin/main` before handoff.

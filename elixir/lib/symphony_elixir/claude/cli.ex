@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Claude.Cli do
   require Logger
   alias SymphonyElixir.Config
   alias SymphonyElixir.Claude.DynamicTool
+  alias SymphonyElixir.Claude.McpConfig
   alias SymphonyElixir.Claude.SessionLog
 
   @port_line_bytes 1_048_576
@@ -191,45 +192,47 @@ defmodule SymphonyElixir.Claude.Cli do
     command = Config.claude_command() |> to_string() |> String.trim()
 
     with {:ok, executable_name, base_args} <- parse_command(command),
-         executable when is_binary(executable) <- System.find_executable(executable_name) do
+         {:ok, executable} <- resolve_executable(executable_name) do
       mode = command_mode(base_args)
-      args = build_cli_args(base_args, prompt, resume_session_id, mode)
+      with {:ok, mcp_details} <- McpConfig.ensure_ready(mode, log?: true) do
+        args = build_cli_args(base_args, prompt, resume_session_id, mode, mcp_details)
 
-      expanded_workspace = Path.expand(workspace)
+        expanded_workspace = Path.expand(workspace)
 
-      Logger.debug("Claude CLI starting: #{executable} #{Enum.join(redact_prompt_arg(args), " ")} (cwd=#{expanded_workspace})")
+        Logger.debug("Claude CLI starting: #{executable} #{Enum.join(redact_prompt_arg(args), " ")} (cwd=#{expanded_workspace})")
 
-      case mode do
-        :app_server ->
-          port =
-            Port.open(
-              {:spawn_executable, String.to_charlist(executable)},
-              [
-                :binary,
-                :exit_status,
-                :stderr_to_stdout,
-                args: Enum.map(args, &String.to_charlist/1),
-                cd: String.to_charlist(expanded_workspace),
-                line: @port_line_bytes
-              ]
-            )
+        case mode do
+          :app_server ->
+            port =
+              Port.open(
+                {:spawn_executable, String.to_charlist(executable)},
+                [
+                  :binary,
+                  :exit_status,
+                  :stderr_to_stdout,
+                  args: Enum.map(args, &String.to_charlist/1),
+                  cd: String.to_charlist(expanded_workspace),
+                  line: @port_line_bytes
+                ]
+              )
 
-          {:ok, %{port: port, mode: :app_server}}
+            {:ok, %{port: port, mode: :app_server}}
 
-        :stream_json ->
-          with {:ok, log_ref} <- SessionLog.begin_turn(issue.identifier) do
-            {:ok,
-             %{
-               executable: executable,
-               args: args,
-               workspace: expanded_workspace,
-               mode: :stream_json,
-               log_ref: log_ref
-             }}
-          end
+          :stream_json ->
+            with {:ok, log_ref} <- SessionLog.begin_turn(issue.identifier) do
+              {:ok,
+               %{
+                 executable: executable,
+                 args: args,
+                 workspace: expanded_workspace,
+                 mode: :stream_json,
+                 log_ref: log_ref
+               }}
+            end
+        end
       end
     else
-      nil ->
+      {:error, :not_found} ->
         {:error, {:claude_cli_not_found, command}}
 
       {:error, _reason} = error ->
@@ -254,11 +257,66 @@ defmodule SymphonyElixir.Claude.Cli do
     end
   end
 
-  defp build_cli_args(base_args, _prompt, _resume_session_id, :app_server) do
+  defp resolve_executable(executable_name) when is_binary(executable_name) do
+    cond do
+      String.contains?(executable_name, "/") ->
+        resolve_path_executable(executable_name)
+
+      true ->
+        resolve_bare_executable(executable_name)
+    end
+  end
+
+  defp resolve_path_executable(executable_name) do
+    expanded = Path.expand(executable_name)
+
+    case File.stat(expanded) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} when Bitwise.band(mode, 0o111) != 0 ->
+        {:ok, expanded}
+
+      {:ok, _stat} ->
+        {:error, :not_found}
+
+      {:error, _reason} ->
+        {:error, :not_found}
+    end
+  end
+
+  defp resolve_bare_executable(executable_name) do
+    case System.find_executable(executable_name) do
+      executable when is_binary(executable) ->
+        {:ok, executable}
+
+      nil ->
+        resolve_via_login_shell(executable_name)
+    end
+  end
+
+  defp resolve_via_login_shell(executable_name) do
+    case System.cmd("/bin/bash", ["-lc", "command -v -- \"$1\"", "bash", executable_name],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        output
+        |> String.trim()
+        |> case do
+          "" -> {:error, :not_found}
+          path -> resolve_path_executable(path)
+        end
+
+      {_output, _status} ->
+        {:error, :not_found}
+    end
+  rescue
+    _error ->
+      {:error, :not_found}
+  end
+
+  defp build_cli_args(base_args, _prompt, _resume_session_id, :app_server, _mcp_details) do
     base_args
   end
 
-  defp build_cli_args(base_args, prompt, resume_session_id, :stream_json) do
+  defp build_cli_args(base_args, prompt, resume_session_id, :stream_json, mcp_details) do
     args = base_args
     args = maybe_append_flag(args, "--output-format", Config.claude_output_format())
 
@@ -274,7 +332,7 @@ defmodule SymphonyElixir.Claude.Cli do
       end
 
     args = maybe_append_flag(args, "--permission-mode", Config.claude_permission_mode())
-    args = maybe_append_flag(args, "--mcp-config", Config.claude_mcp_config())
+    args = maybe_append_flag(args, "--mcp-config", mcp_config_path(mcp_details))
     args = maybe_append_flag(args, "--append-system-prompt", Config.claude_append_system_prompt())
 
     args =
@@ -304,6 +362,9 @@ defmodule SymphonyElixir.Claude.Cli do
     # so Claude would hang waiting for more input if we used stdin.
     maybe_append_flag(args, "-p", prompt)
   end
+
+  defp mcp_config_path(%{path: path}) when is_binary(path), do: path
+  defp mcp_config_path(_details), do: nil
 
   defp command_mode(base_args) when is_list(base_args) do
     if Enum.any?(base_args, &(&1 == "app-server")) do

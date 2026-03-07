@@ -86,6 +86,9 @@ hooks:
     git clone --depth 1 git@github.com:your-org/your-repo.git .
 claude:
   command: claude --output-format stream-json
+  # Optional advanced override for a custom Claude MCP config file.
+  # If omitted, Symphony generates a default Linear MCP config.
+  # mcp_config: /absolute/path/to/custom-claude.mcp.json
 ---
 
 You are working on Linear issue {{ issue.identifier }}.
@@ -96,19 +99,29 @@ Notes:
 - `tracker.kind` must currently be `linear` or `memory`.
 - `tracker.project_slug` is required for `linear`.
 - `hooks.after_create` is how a fresh workspace gets the target repository contents.
-- `claude.command` must be a non-empty shell command.
+- `claude.command` must be a non-empty executable command string.
 
 ## Required Environment Variables
 
 - `LINEAR_API_KEY`: required for `tracker.kind: linear` unless your workflow injects `tracker.api_key`
 - `LINEAR_ASSIGNEE`: optional shortcut if you use `tracker.assignee: $LINEAR_ASSIGNEE`
 
+Linear integration behavior:
+
+- In the default `stream-json` path, Symphony generates a Claude MCP config for the blessed
+  official Linear MCP server automatically.
+- You only need to provide Linear credentials for the default path.
+- `claude.mcp_config` is an advanced override for teams that want a custom MCP config.
+
 Path and env behavior:
 
 - `workspace.root` supports `~` expansion.
 - `workspace.root` also supports `$VAR`, which is resolved before path handling.
-- `claude.command` is kept as a shell command string, so any `$VAR` expansion happens in the shell
-  used to launch Claude.
+- `claude.command` is parsed into an executable plus arguments and launched directly, not via
+  `sh -lc`.
+- A bare executable like `claude` is resolved from the current `PATH`, with a login-shell
+  fallback to pick up user PATH initialization when needed.
+- Absolute paths remain the most deterministic option for `claude.command`.
 
 ## What You Should Expect To See
 
@@ -119,6 +132,14 @@ On a healthy start:
 - the orchestrator begins polling,
 - terminal status output starts refreshing,
 - logs appear under `./log` unless you override `--logs-root`.
+
+Important log files:
+
+- `./log/symphony.log` for general runtime lifecycle
+- `./log/linear-pull.log` for Linear fetch attempts, returned issue identifiers, pagination, and
+  fetch failures
+- `./log/claude.mcp.json` for the generated default Claude MCP config when `claude.mcp_config` is
+  not set
 
 If `--port` or `server.port` is set:
 

@@ -1307,4 +1307,297 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "stream-json resolves bare claude from the current PATH and preserves extra args" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-path-resolution-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+      previous_path = System.get_env("PATH")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
+      bin_dir = Path.join(test_root, "bin")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-103")
+      claude_binary = Path.join(bin_dir, "claude")
+      trace_file = Path.join(test_root, "claude-path.trace")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
+        end
+
+        if previous_log_file do
+          Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+        else
+          Application.delete_env(:symphony_elixir, :log_file)
+        end
+      end)
+
+      File.mkdir_p!(bin_dir)
+      File.mkdir_p!(workspace)
+      System.put_env("PATH", "#{bin_dir}:/usr/bin:/bin")
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-path.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf '%s\\n' '{"type":"result","session_id":"session-path","usage":{"input_tokens":1,"output_tokens":1}}'
+      exit 0
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "claude --model claude-sonnet-4"
+      )
+
+      issue = %Issue{
+        id: "issue-cli-path",
+        identifier: "MT-103",
+        title: "Resolve Claude from PATH",
+        description: "Use bare claude from PATH",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-103",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "session-path"}} = AppServer.run(workspace, "hello", issue)
+
+      trace = File.read!(trace_file)
+      assert String.contains?(trace, "--model claude-sonnet-4")
+      assert String.contains?(trace, "--output-format stream-json")
+      assert String.contains?(trace, "--verbose")
+      assert String.contains?(trace, "-p hello")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "stream-json resolves bare claude via login shell PATH fallback" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-login-shell-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      previous_log_file = Application.get_env(:symphony_elixir, :log_file)
+      previous_path = System.get_env("PATH")
+      previous_home = System.get_env("HOME")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
+      home_dir = Path.join(test_root, "home")
+      login_bin = Path.join(test_root, "login-bin")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-104")
+      claude_binary = Path.join(login_bin, "claude")
+      trace_file = Path.join(test_root, "claude-login.trace")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+        restore_env("HOME", previous_home)
+
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
+        end
+
+        if previous_log_file do
+          Application.put_env(:symphony_elixir, :log_file, previous_log_file)
+        else
+          Application.delete_env(:symphony_elixir, :log_file)
+        end
+      end)
+
+      File.mkdir_p!(home_dir)
+      File.mkdir_p!(login_bin)
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(home_dir, ".bash_profile"), "export PATH=\"#{login_bin}:$PATH\"\n")
+      System.put_env("PATH", "/usr/bin:/bin")
+      System.put_env("HOME", home_dir)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-login.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf '%s\\n' '{"type":"result","session_id":"session-login","usage":{"input_tokens":1,"output_tokens":1}}'
+      exit 0
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "claude --model claude-opus-4"
+      )
+
+      issue = %Issue{
+        id: "issue-cli-login",
+        identifier: "MT-104",
+        title: "Resolve Claude via login shell",
+        description: "Use login shell fallback",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-104",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "session-login"}} = AppServer.run(workspace, "hello", issue)
+
+      trace = File.read!(trace_file)
+      assert String.contains?(trace, "--model claude-opus-4")
+      assert String.contains?(trace, "--output-format stream-json")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server resolves bare claude via login shell PATH fallback" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-login-shell-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      previous_path = System.get_env("PATH")
+      previous_home = System.get_env("HOME")
+      previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
+      home_dir = Path.join(test_root, "home")
+      login_bin = Path.join(test_root, "login-bin")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-105")
+      claude_binary = Path.join(login_bin, "claude")
+      trace_file = Path.join(test_root, "claude-app-server-login.trace")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+        restore_env("HOME", previous_home)
+
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CLAUDE_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CLAUDE_TRACE")
+        end
+      end)
+
+      File.mkdir_p!(home_dir)
+      File.mkdir_p!(login_bin)
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(home_dir, ".bash_profile"), "export PATH=\"#{login_bin}:$PATH\"\n")
+      System.put_env("PATH", "/usr/bin:/bin")
+      System.put_env("HOME", home_dir)
+      System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CLAUDE_TRACE:-/tmp/claude-app-server-login.trace}"
+      count=0
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-105"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-105"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "claude app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-app-server-login",
+        identifier: "MT-105",
+        title: "Resolve app-server Claude via login shell",
+        description: "Use login shell fallback in app-server mode",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-105",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{session_id: "thread-105-turn-105"}} = AppServer.run(workspace, "hello", issue)
+
+      trace = File.read!(trace_file)
+      assert String.contains?(trace, "ARGV:app-server")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "run returns a startup error when bare claude cannot be resolved" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-claude-not-found-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      previous_path = System.get_env("PATH")
+      previous_home = System.get_env("HOME")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-106")
+      home_dir = Path.join(test_root, "home")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+        restore_env("HOME", previous_home)
+      end)
+
+      File.mkdir_p!(home_dir)
+      File.mkdir_p!(workspace)
+      System.put_env("PATH", "/usr/bin:/bin")
+      System.put_env("HOME", home_dir)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: "claude --model claude-sonnet-4"
+      )
+
+      issue = %Issue{
+        id: "issue-cli-missing",
+        identifier: "MT-106",
+        title: "Report missing Claude binary",
+        description: "No claude executable should be resolvable",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-106",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:claude_cli_not_found, "claude --model claude-sonnet-4"}} =
+               AppServer.run(workspace, "hello", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end
