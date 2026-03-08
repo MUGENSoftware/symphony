@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Claude.Cli do
   alias SymphonyElixir.Claude.DynamicTool
   alias SymphonyElixir.Claude.McpConfig
   alias SymphonyElixir.Claude.SessionLog
+  alias SymphonyElixir.Claude.UsageLimit
 
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
@@ -194,6 +195,7 @@ defmodule SymphonyElixir.Claude.Cli do
     with {:ok, executable_name, base_args} <- parse_command(command),
          {:ok, executable} <- resolve_executable(executable_name) do
       mode = command_mode(base_args)
+
       with {:ok, mcp_details} <- McpConfig.ensure_ready(mode, log?: true) do
         args = build_cli_args(base_args, prompt, resume_session_id, mode, mcp_details)
 
@@ -293,9 +295,7 @@ defmodule SymphonyElixir.Claude.Cli do
   end
 
   defp resolve_via_login_shell(executable_name) do
-    case System.cmd("/bin/bash", ["-lc", "command -v -- \"$1\"", "bash", executable_name],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("/bin/bash", ["-lc", "command -v -- \"$1\"", "bash", executable_name], stderr_to_stdout: true) do
       {output, 0} ->
         output
         |> String.trim()
@@ -713,27 +713,7 @@ defmodule SymphonyElixir.Claude.Cli do
          }}
 
       {:ok, %{"type" => "result"} = payload} ->
-        session_id = get_in(payload, ["session_id"])
-        usage = get_in(payload, ["usage"])
-        cost_usd = get_in(payload, ["cost_usd"])
-        result_text = get_in(payload, ["result"])
-
-        result_metadata = maybe_set_usage(metadata, payload)
-
-        emit_message(
-          on_message,
-          :turn_completed,
-          %{
-            payload: payload,
-            raw: line,
-            result: result_text,
-            session_id: session_id,
-            cost_usd: cost_usd
-          },
-          result_metadata
-        )
-
-        {:done, %{session_id: session_id, usage: usage}}
+        handle_result_payload(payload, line, on_message, metadata)
 
       {:ok, %{"type" => "error"} = payload} ->
         error_message = Map.get(payload, "error", "unknown error")
@@ -1041,8 +1021,82 @@ defmodule SymphonyElixir.Claude.Cli do
     "Claude CLI turn reached max turns for #{issue_context(issue)} session_id=#{session_id}; ready to resume"
   end
 
+  defp completion_log_message(:usage_limit_reached, issue, session_id) do
+    "Claude CLI usage limit reached for #{issue_context(issue)} session_id=#{session_id}; cooldown active"
+  end
+
   defp completion_log_message(_turn_result, issue, session_id) do
     "Claude CLI turn completed for #{issue_context(issue)} session_id=#{session_id}"
+  end
+
+  defp handle_result_payload(payload, line, on_message, metadata) do
+    case UsageLimit.parse_result(payload) do
+      {:ok, usage_limit} ->
+        session_id = get_in(payload, ["session_id"])
+        usage = get_in(payload, ["usage"])
+        cost_usd = get_in(payload, ["cost_usd"])
+        result_metadata = maybe_set_usage(metadata, payload)
+
+        emit_message(
+          on_message,
+          :usage_limit_reached,
+          %{
+            payload: payload,
+            raw: line,
+            result: usage_limit.message,
+            message: usage_limit.message,
+            session_id: session_id,
+            cost_usd: cost_usd,
+            reason: usage_limit.reason,
+            reset_at: usage_limit.reset_at,
+            retry_after_ms: usage_limit.retry_after_ms,
+            timezone: usage_limit.timezone,
+            resume_session_id: session_id
+          },
+          result_metadata
+        )
+
+        {:done,
+         %{
+           session_id: session_id,
+           usage: usage,
+           result: :usage_limit_reached,
+           resume_session_id: session_id,
+           reset_at: usage_limit.reset_at,
+           retry_after_ms: usage_limit.retry_after_ms
+         }}
+
+      {:error, reason} ->
+        Logger.warning("Failed to parse Claude usage-limit reset time: #{inspect(reason)}")
+        complete_result_payload(payload, line, on_message, metadata)
+
+      :no_match ->
+        complete_result_payload(payload, line, on_message, metadata)
+    end
+  end
+
+  defp complete_result_payload(payload, line, on_message, metadata) do
+    session_id = get_in(payload, ["session_id"])
+    usage = get_in(payload, ["usage"])
+    cost_usd = get_in(payload, ["cost_usd"])
+    result_text = get_in(payload, ["result"])
+
+    result_metadata = maybe_set_usage(metadata, payload)
+
+    emit_message(
+      on_message,
+      :turn_completed,
+      %{
+        payload: payload,
+        raw: line,
+        result: result_text,
+        session_id: session_id,
+        cost_usd: cost_usd
+      },
+      result_metadata
+    )
+
+    {:done, %{session_id: session_id, usage: usage}}
   end
 
   defp max_turns_exhausted_message(session_id, stop_reason, num_turns) do

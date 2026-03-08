@@ -15,7 +15,7 @@ Symphony is a long-running service that:
 2. creates one isolated workspace per issue,
 3. launches Claude Code inside that workspace,
 4. feeds Claude a workflow prompt from `WORKFLOW.md`,
-5. keeps retrying or continuing work while the issue remains active,
+5. keeps retrying or continuing work while the issue remains active, while pausing new Claude launches during account-level usage cooldowns,
 6. cleans up workspaces when issues become terminal.
 
 If you do not know Elixir, the important mental model is "scheduler plus workers":

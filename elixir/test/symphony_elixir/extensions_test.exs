@@ -498,7 +498,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     {status, _headers, body} = http_request(port, "POST", "/api/v1/refresh", "")
     assert status == 503
     assert %{"error" => %{"code" => "orchestrator_unavailable"}} = Jason.decode!(body)
-
   end
 
   test "http server returns snapshot timeout error" do
@@ -581,6 +580,13 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      claude_availability: %{
+        status: "cooldown",
+        reason: "usage_cap",
+        reset_at: "2026-03-08T09:00:00Z",
+        message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+        source_session_id: "thread-both"
+      },
       rate_limits: nil
     }
 
@@ -612,7 +618,15 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {status, _headers, body} = http_request(port, "GET", "/api/v1/state")
     assert status == 200
-    assert %{"counts" => %{"running" => 1, "retrying" => 1}} = Jason.decode!(body)
+
+    assert %{
+             "counts" => %{"running" => 1, "retrying" => 1},
+             "claude_availability" => %{
+               "status" => "cooldown",
+               "reason" => "usage_cap",
+               "reset_at" => "2026-03-08T09:00:00Z"
+             }
+           } = Jason.decode!(body)
 
     {status, _headers, body} = http_request(port, "GET", "/api/v1/MT-BOTH")
     assert status == 200

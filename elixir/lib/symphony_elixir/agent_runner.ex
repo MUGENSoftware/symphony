@@ -69,32 +69,37 @@ defmodule SymphonyElixir.AgentRunner do
 
       # Update session with new session_id for continuation
       next_session = Map.get(turn_result, :session, session)
+      turn_status = turn_result[:result]
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      if turn_status == :usage_limit_reached do
+        :ok
+      else
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_claude_turns(
-            next_session,
-            workspace,
-            refreshed_issue,
-            claude_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_claude_turns(
+              next_session,
+              workspace,
+              refreshed_issue,
+              claude_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          {:continue, refreshed_issue} ->
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+            :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+          {:done, _refreshed_issue} ->
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end

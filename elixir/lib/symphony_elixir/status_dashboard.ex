@@ -310,6 +310,7 @@ defmodule SymphonyElixir.StatusDashboard do
              running: running,
              retrying: retrying,
              claude_totals: claude_totals,
+             claude_availability: Map.get(snapshot, :claude_availability),
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
            }},
@@ -327,6 +328,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, claude_totals: claude_totals} = snapshot} ->
+        claude_availability = Map.get(snapshot, :claude_availability)
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
@@ -356,6 +358,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize("out #{format_count(claude_output_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(claude_total_tokens)}", @ansi_yellow),
+           colorize("│ Claude: ", @ansi_bold) <> format_claude_availability(claude_availability),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
            project_link_lines,
            project_refresh_line,
@@ -941,6 +944,35 @@ defmodule SymphonyElixir.StatusDashboard do
     |> truncate(80)
     |> colorize(@ansi_gray)
   end
+
+  defp format_claude_availability(nil), do: colorize("available", @ansi_green)
+
+  defp format_claude_availability(%{} = availability) do
+    status = map_value(availability, ["status", :status])
+    reset_at = map_value(availability, ["reset_at", :reset_at])
+    reason = map_value(availability, ["reason", :reason])
+
+    case status do
+      value when value in ["cooldown", :cooldown] ->
+        details =
+          ["cooldown", reason && "(#{reason})", reset_at && "until #{reset_at}"]
+          |> Enum.reject(&is_nil/1)
+          |> Enum.join(" ")
+
+        colorize(details, @ansi_orange)
+
+      value when value in ["available", :available] ->
+        colorize("available", @ansi_green)
+
+      _ ->
+        availability
+        |> inspect(limit: 6)
+        |> truncate(80)
+        |> colorize(@ansi_gray)
+    end
+  end
+
+  defp format_claude_availability(other), do: colorize(to_string(other), @ansi_gray)
 
   defp format_rate_limit_bucket(nil), do: "n/a"
 
@@ -1611,7 +1643,7 @@ defmodule SymphonyElixir.StatusDashboard do
           "totalTokens",
           :totalTokens
         ])
-      ) || (base_input + cached_input + (output || 0))
+      ) || base_input + cached_input + (output || 0)
 
     input =
       if base_input > 0 or cached_input > 0 do

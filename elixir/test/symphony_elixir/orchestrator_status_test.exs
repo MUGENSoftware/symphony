@@ -547,6 +547,258 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot.rate_limits == rate_limits
   end
 
+  test "orchestrator snapshot tracks claude availability payloads" do
+    issue_id = "issue-availability-snapshot"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-223",
+      title: "Usage limit snapshot test",
+      description: "Capture claude availability state",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-223"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :AvailabilityOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_claude_message: nil,
+      last_claude_timestamp: nil,
+      last_claude_event: nil,
+      claude_input_tokens: 0,
+      claude_output_tokens: 0,
+      claude_total_tokens: 0,
+      claude_last_reported_input_tokens: 0,
+      claude_last_reported_output_tokens: 0,
+      claude_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    reset_at = ~U[2026-03-08 09:00:00Z]
+
+    send(
+      pid,
+      {:claude_worker_update, issue_id,
+       %{
+         event: :usage_limit_reached,
+         session_id: "session-usage-limit",
+         message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+         reset_at: reset_at,
+         retry_after_ms: 7_200_000,
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert snapshot.claude_availability == %{
+             status: "cooldown",
+             reason: "usage_cap",
+             reset_at: "2026-03-08T09:00:00Z",
+             message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+             source_session_id: "session-usage-limit"
+           }
+  end
+
+  test "orchestrator skips fresh dispatch while claude cooldown is active" do
+    previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    on_exit(fn ->
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_issues || [])
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 50
+    )
+
+    issue = %Issue{
+      id: "issue-cooldown-dispatch",
+      identifier: "MT-224",
+      title: "Fresh dispatch should pause",
+      description: "Global cooldown blocks new workers",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-224"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :CooldownDispatchOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    blocked_until_ms = System.monotonic_time(:millisecond) + 5_000
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | claude_availability: %{
+            status: :cooldown,
+            reason: :usage_cap,
+            reset_at: ~U[2026-03-08 09:00:00Z],
+            blocked_until_ms: blocked_until_ms,
+            message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+            source_session_id: "session-cooldown",
+            detected_at: DateTime.utc_now()
+          }
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+    Process.sleep(100)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert snapshot.running == []
+    assert snapshot.retrying == []
+
+    assert snapshot.claude_availability == %{
+             status: "cooldown",
+             reason: "usage_cap",
+             reset_at: "2026-03-08T09:00:00Z",
+             message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+             source_session_id: "session-cooldown"
+           }
+  end
+
+  test "orchestrator reschedules due retries to the cooldown deadline without incrementing attempt count" do
+    previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    on_exit(fn ->
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_issues || [])
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    issue = %Issue{
+      id: "issue-cooldown-retry",
+      identifier: "MT-225",
+      title: "Retry should wait for cooldown",
+      description: "Cooldown deferral preserves attempt count",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-225"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :CooldownRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    blocked_until_ms = System.monotonic_time(:millisecond) + 5_000
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | retry_attempts: %{
+            issue.id => %{
+              attempt: 3,
+              due_at_ms: System.monotonic_time(:millisecond),
+              identifier: issue.identifier,
+              error: "retry scheduled",
+              resume_session_id: "session-retry"
+            }
+          },
+          claimed: MapSet.put(state.claimed, issue.id),
+          claude_availability: %{
+            status: :cooldown,
+            reason: :usage_cap,
+            reset_at: ~U[2026-03-08 09:00:00Z],
+            blocked_until_ms: blocked_until_ms,
+            message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+            source_session_id: "session-cooldown",
+            detected_at: DateTime.utc_now()
+          }
+      }
+    end)
+
+    send(pid, {:retry_issue, issue.id})
+    Process.sleep(100)
+
+    state = :sys.get_state(pid)
+
+    assert %{
+             attempt: 3,
+             due_at_ms: due_at_ms,
+             identifier: "MT-225",
+             error: error,
+             resume_session_id: "session-retry"
+           } = state.retry_attempts[issue.id]
+
+    assert due_at_ms >= blocked_until_ms
+    assert error =~ "Global cooldown active"
+  end
+
+  test "orchestrator clears claude cooldown state when the reset timer fires" do
+    orchestrator_name = Module.concat(__MODULE__, :CooldownExpiryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    blocked_until_ms = System.monotonic_time(:millisecond) + 1_000
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | claude_availability: %{
+            status: :cooldown,
+            reason: :usage_cap,
+            reset_at: ~U[2026-03-08 09:00:00Z],
+            blocked_until_ms: blocked_until_ms,
+            message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+            source_session_id: "session-cooldown",
+            detected_at: DateTime.utc_now()
+          }
+      }
+    end)
+
+    send(pid, {:claude_availability_reset, blocked_until_ms})
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{claude_availability: nil} -> true
+        _ -> false
+      end)
+
+    assert snapshot.claude_availability == nil
+  end
+
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do
     issue_id = "issue-token-precedence"
 
@@ -1092,6 +1344,30 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered =~ "https://linear.app/project/project/issues"
     assert rendered =~ "│ Dashboard:"
     assert rendered =~ "http://127.0.0.1:4000/"
+  end
+
+  test "status dashboard renders claude cooldown status separately from rate limits" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         claude_availability: %{
+           status: "cooldown",
+           reason: "usage_cap",
+           reset_at: "2026-03-08T09:00:00Z",
+           message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+           source_session_id: "session-cooldown"
+         },
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+
+    assert rendered =~ "│ Claude:"
+    assert rendered =~ "cooldown"
+    assert rendered =~ "2026-03-08T09:00:00Z"
   end
 
   test "status dashboard prefers the bound server port and normalizes wildcard hosts" do

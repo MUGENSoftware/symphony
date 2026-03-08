@@ -31,12 +31,14 @@ defmodule SymphonyElixir.Orchestrator do
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
+      :claude_availability_timer_ref,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
       claude_totals: nil,
-      claude_rate_limits: nil
+      claude_rate_limits: nil,
+      claude_availability: nil
     ]
   end
 
@@ -56,7 +58,9 @@ defmodule SymphonyElixir.Orchestrator do
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
       claude_totals: @empty_claude_totals,
-      claude_rate_limits: nil
+      claude_rate_limits: nil,
+      claude_availability: nil,
+      claude_availability_timer_ref: nil
     }
 
     run_terminal_workspace_cleanup()
@@ -108,7 +112,7 @@ defmodule SymphonyElixir.Orchestrator do
 
               state
               |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, continuation_retry_metadata(running_entry))
+              |> schedule_normal_exit_retry(issue_id, running_entry)
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -143,6 +147,7 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> apply_claude_token_delta(token_delta)
           |> apply_claude_rate_limits(update)
+          |> apply_claude_availability(update)
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -150,6 +155,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:claude_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:claude_availability_reset, blocked_until_ms},
+        %{claude_availability: %{blocked_until_ms: blocked_until_ms}} = state
+      ) do
+    state =
+      state
+      |> clear_claude_availability()
+      |> refresh_requested_poll()
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
+  def handle_info({:claude_availability_reset, _blocked_until_ms}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id}, state) do
     result =
@@ -170,11 +190,15 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
-    with :ok <- Config.validate!(),
+    with false <- claude_unavailable?(state),
+         :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
+      true ->
+        state
+
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
         state
@@ -688,8 +712,20 @@ defmodule SymphonyElixir.Orchestrator do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
-    old_timer = Map.get(previous_retry, :timer_ref)
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    put_retry_attempt(state, issue_id, next_attempt, metadata, previous_retry, due_at_ms, delay_ms)
+  end
+
+  defp schedule_issue_retry_at(%State{} = state, issue_id, attempt, metadata, due_at_ms)
+       when is_binary(issue_id) and is_map(metadata) and is_integer(due_at_ms) do
+    previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
+    next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
+    delay_ms = max(due_at_ms - System.monotonic_time(:millisecond), 0)
+    put_retry_attempt(state, issue_id, next_attempt, metadata, previous_retry, due_at_ms, delay_ms)
+  end
+
+  defp put_retry_attempt(state, issue_id, attempt, metadata, previous_retry, due_at_ms, delay_ms) do
+    old_timer = Map.get(previous_retry, :timer_ref)
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
 
@@ -701,13 +737,13 @@ defmodule SymphonyElixir.Orchestrator do
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
-    Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
+    Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{attempt})#{error_suffix}")
 
     %{
       state
       | retry_attempts:
           Map.put(state.retry_attempts, issue_id, %{
-            attempt: next_attempt,
+            attempt: attempt,
             timer_ref: timer_ref,
             due_at_ms: due_at_ms,
             identifier: identifier,
@@ -807,23 +843,91 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata)}
-    else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+    cond do
+      claude_unavailable?(state) ->
+        availability = Map.get(state, :claude_availability)
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+        {:noreply,
+         schedule_issue_retry_at(
+           state,
+           issue.id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: claude_availability_retry_message(availability)
+           }),
+           Map.get(availability, :blocked_until_ms)
+         )}
+
+      retry_candidate_issue?(issue, terminal_state_set()) and
+          dispatch_slots_available?(issue, state) ->
+        {:noreply, dispatch_issue(state, issue, attempt, metadata)}
+
+      true ->
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots"
+           })
+         )}
     end
+  end
+
+  defp schedule_normal_exit_retry(state, issue_id, running_entry) do
+    metadata = continuation_retry_metadata(running_entry)
+
+    case cooldown_retry_due_at(state, running_entry) do
+      {:ok, due_at_ms} ->
+        schedule_issue_retry_at(state, issue_id, 1, metadata, due_at_ms)
+
+      :error ->
+        schedule_issue_retry(state, issue_id, 1, metadata)
+    end
+  end
+
+  defp cooldown_retry_due_at(state, running_entry) do
+    availability = Map.get(state, :claude_availability)
+
+    cond do
+      Map.get(running_entry, :last_claude_event) != :usage_limit_reached ->
+        :error
+
+      not claude_unavailable?(state) ->
+        :error
+
+      is_integer(Map.get(availability, :blocked_until_ms)) ->
+        {:ok, availability.blocked_until_ms}
+
+      true ->
+        :error
+    end
+  end
+
+  defp claude_availability_retry_message(availability) when is_map(availability) do
+    base =
+      if is_binary(Map.get(availability, :message)) do
+        Map.get(availability, :message)
+      else
+        "Claude usage limit reached."
+      end
+
+    case Map.get(availability, :reset_at) do
+      %DateTime{} = reset_at ->
+        "#{base} Global cooldown active until #{DateTime.to_iso8601(reset_at)}."
+
+      _ ->
+        base
+    end
+  end
+
+  defp claude_availability_retry_message(_availability) do
+    "Claude usage limit reached. Global cooldown active."
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
@@ -901,6 +1005,13 @@ defmodule SymphonyElixir.Orchestrator do
           )
         )
 
+      :usage_limit_reached ->
+        Map.put(
+          metadata,
+          :error,
+          usage_limit_retry_message(Map.get(running_entry, :last_claude_message))
+        )
+
       _ ->
         metadata
     end
@@ -920,6 +1031,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp max_turns_retry_message(_session_id, _message) do
     "Claude reached its max-turn limit. Auto-resume scheduled."
+  end
+
+  defp usage_limit_retry_message(%{message: message}) when is_binary(message) do
+    "#{message} Global cooldown scheduled."
+  end
+
+  defp usage_limit_retry_message(_message) do
+    "Claude usage limit reached. Global cooldown scheduled."
   end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
@@ -1009,6 +1128,7 @@ defmodule SymphonyElixir.Orchestrator do
        retrying: retrying,
        claude_totals: state.claude_totals,
        rate_limits: Map.get(state, :claude_rate_limits),
+       claude_availability: claude_availability_snapshot(Map.get(state, :claude_availability)),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1186,6 +1306,126 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_claude_rate_limits(state, _update), do: state
+
+  defp apply_claude_availability(%State{} = state, %{event: :usage_limit_reached} = update) do
+    case build_claude_availability(update) do
+      {:ok, availability} ->
+        current = Map.get(state, :claude_availability)
+
+        if keep_existing_claude_availability?(current, availability) do
+          state
+        else
+          state
+          |> cancel_claude_availability_timer()
+          |> schedule_claude_availability(availability)
+        end
+
+      :error ->
+        state
+    end
+  end
+
+  defp apply_claude_availability(state, _update), do: state
+
+  defp build_claude_availability(update) do
+    with %DateTime{} = reset_at <- Map.get(update, :reset_at),
+         retry_after_ms when is_integer(retry_after_ms) and retry_after_ms >= 0 <-
+           Map.get(update, :retry_after_ms) do
+      {:ok,
+       %{
+         status: :cooldown,
+         reason: :usage_cap,
+         reset_at: reset_at,
+         blocked_until_ms: System.monotonic_time(:millisecond) + retry_after_ms,
+         message: Map.get(update, :message),
+         source_session_id: Map.get(update, :session_id),
+         detected_at: Map.get(update, :timestamp, DateTime.utc_now())
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp keep_existing_claude_availability?(current, replacement)
+       when is_map(current) and is_map(replacement) do
+    current_due_at = Map.get(current, :blocked_until_ms, 0)
+    replacement_due_at = Map.get(replacement, :blocked_until_ms, 0)
+    current_due_at >= replacement_due_at
+  end
+
+  defp keep_existing_claude_availability?(_current, _replacement), do: false
+
+  defp schedule_claude_availability(%State{} = state, availability) do
+    delay_ms = max(Map.get(availability, :blocked_until_ms) - System.monotonic_time(:millisecond), 0)
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:claude_availability_reset, Map.get(availability, :blocked_until_ms)},
+        delay_ms
+      )
+
+    %{
+      state
+      | claude_availability: availability,
+        claude_availability_timer_ref: timer_ref
+    }
+  end
+
+  defp cancel_claude_availability_timer(%State{} = state) do
+    if is_reference(state.claude_availability_timer_ref) do
+      Process.cancel_timer(state.claude_availability_timer_ref)
+    end
+
+    %{state | claude_availability_timer_ref: nil}
+  end
+
+  defp clear_claude_availability(%State{} = state) do
+    state
+    |> cancel_claude_availability_timer()
+    |> Map.put(:claude_availability, nil)
+  end
+
+  defp claude_unavailable?(%State{} = state) do
+    case Map.get(state, :claude_availability) do
+      %{blocked_until_ms: blocked_until_ms} when is_integer(blocked_until_ms) ->
+        blocked_until_ms > System.monotonic_time(:millisecond)
+
+      _ ->
+        false
+    end
+  end
+
+  defp claude_availability_snapshot(%{status: :cooldown} = availability) do
+    %{
+      status: "cooldown",
+      reason: Atom.to_string(Map.get(availability, :reason, :usage_cap)),
+      reset_at: iso8601(Map.get(availability, :reset_at)),
+      message: Map.get(availability, :message),
+      source_session_id: Map.get(availability, :source_session_id)
+    }
+  end
+
+  defp claude_availability_snapshot(_availability), do: nil
+
+  defp refresh_requested_poll(%State{} = state) do
+    now_ms = System.monotonic_time(:millisecond)
+    :ok = schedule_tick(0)
+
+    %{
+      state
+      | next_poll_due_at_ms: now_ms,
+        poll_check_in_progress: false
+    }
+  end
+
+  defp iso8601(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.truncate(:second)
+    |> DateTime.to_iso8601()
+  end
+
+  defp iso8601(_datetime), do: nil
 
   defp apply_token_delta(claude_totals, token_delta) do
     input_tokens = Map.get(claude_totals, :input_tokens, 0) + token_delta.input_tokens
@@ -1510,7 +1750,7 @@ defmodule SymphonyElixir.Orchestrator do
         :total,
         "totalTokens",
         :totalTokens
-      ]) || (base_input + cached_input + output)
+      ]) || base_input + cached_input + output
 
     %{
       input: base_input + cached_input,

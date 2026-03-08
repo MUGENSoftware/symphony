@@ -1007,6 +1007,10 @@ Continuation processing:
   with `--resume <session_id>` and a continuation guidance prompt.
 - Each continuation is a separate subprocess invocation; there is no long-running process
   to manage between turns.
+- If the final `result` event has `is_error: true` and matches the known Claude usage-cap message
+  (`You've hit your limit · resets ...`), treat it as an account cooldown event rather than a
+  normal turn completion. Parse the reported reset time, expose it upstream, and block new Claude
+  subprocess launches until that deadline.
 
 Line handling requirements:
 
@@ -1033,6 +1037,7 @@ Important emitted events may include:
 - `session_started` (derived from `init` stream event)
 - `turn_completed` (derived from subprocess exit 0 + `result` event)
 - `turn_failed` (derived from subprocess non-zero exit or `error` event)
+- `usage_limit_reached` (derived from a parsed usage-cap `result` event, includes `reset_at`)
 - `turn_timeout` (enforced by orchestrator)
 - `turn_stalled` (enforced by orchestrator)
 - `notification` (derived from `assistant` stream events for progress)
