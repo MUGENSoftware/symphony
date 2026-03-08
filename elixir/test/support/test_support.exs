@@ -101,6 +101,11 @@ defmodule SymphonyElixir.TestSupport do
           claude_mcp_config: nil,
           claude_read_timeout_ms: 5_000,
           claude_stall_timeout_ms: 300_000,
+          git_enabled: false,
+          git_base_branch: "main",
+          git_branch_prefix: "claude/",
+          git_auto_push: true,
+          git_auto_pr: true,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -136,6 +141,11 @@ defmodule SymphonyElixir.TestSupport do
     claude_mcp_config = Keyword.get(config, :claude_mcp_config)
     claude_read_timeout_ms = Keyword.get(config, :claude_read_timeout_ms)
     claude_stall_timeout_ms = Keyword.get(config, :claude_stall_timeout_ms)
+    git_enabled = Keyword.get(config, :git_enabled)
+    git_base_branch = Keyword.get(config, :git_base_branch)
+    git_branch_prefix = Keyword.get(config, :git_branch_prefix)
+    git_auto_push = Keyword.get(config, :git_auto_push)
+    git_auto_pr = Keyword.get(config, :git_auto_pr)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -176,6 +186,7 @@ defmodule SymphonyElixir.TestSupport do
         "  mcp_config: #{yaml_value(claude_mcp_config)}",
         "  read_timeout_ms: #{yaml_value(claude_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(claude_stall_timeout_ms)}",
+        git_yaml(git_enabled, git_base_branch, git_branch_prefix, git_auto_push, git_auto_pr),
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
@@ -208,6 +219,20 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value), do: yaml_value(to_string(value))
+
+  defp git_yaml(false, _base_branch, _prefix, _auto_push, _auto_pr), do: nil
+
+  defp git_yaml(enabled, base_branch, prefix, auto_push, auto_pr) do
+    [
+      "git:",
+      "  enabled: #{yaml_value(enabled)}",
+      "  base_branch: #{yaml_value(base_branch)}",
+      "  branch_prefix: #{yaml_value(prefix)}",
+      "  auto_push: #{yaml_value(auto_push)}",
+      "  auto_pr: #{yaml_value(auto_pr)}"
+    ]
+    |> Enum.join("\n")
+  end
 
   defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 

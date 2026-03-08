@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Claude.Cli
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Git, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, claude_update_recipient \\ nil, opts \\ []) do
@@ -14,7 +14,8 @@ defmodule SymphonyElixir.AgentRunner do
     case Workspace.create_for_issue(issue) do
       {:ok, workspace} ->
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue),
+          with :ok <- maybe_git_setup(workspace, issue),
+               :ok <- Workspace.run_before_run_hook(workspace, issue),
                :ok <- run_claude_turns(workspace, issue, claude_update_recipient, opts) do
             :ok
           else
@@ -23,6 +24,7 @@ defmodule SymphonyElixir.AgentRunner do
               raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
           end
         after
+          maybe_git_publish(workspace, issue)
           Workspace.run_after_run_hook(workspace, issue)
         end
 
@@ -145,6 +147,45 @@ defmodule SymphonyElixir.AgentRunner do
     state_name
     |> String.trim()
     |> String.downcase()
+  end
+
+  defp maybe_git_setup(workspace, %Issue{identifier: identifier}) do
+    if Config.git_enabled?() do
+      Logger.info("Running git branch setup for issue_identifier=#{identifier} workspace=#{workspace}")
+
+      case Git.setup_branch(workspace, identifier) do
+        :ok ->
+          :ok
+
+        {:error, {:git_merge_conflict, _status, _output}} ->
+          # Merge conflicts are not fatal — Claude will resolve them during the run
+          Logger.info("Git merge conflict detected, Claude will resolve during run issue_identifier=#{identifier}")
+          :ok
+
+        {:error, reason} = error ->
+          Logger.error("Git setup failed issue_identifier=#{identifier} reason=#{inspect(reason)}")
+          error
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_git_publish(workspace, %Issue{identifier: identifier} = issue) do
+    if Config.git_enabled?() do
+      Logger.info("Running git publish for issue_identifier=#{identifier} workspace=#{workspace}")
+
+      case Git.publish(workspace, identifier, issue) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Git publish failed issue_identifier=#{identifier} reason=#{inspect(reason)}")
+          :ok
+      end
+    else
+      :ok
+    end
   end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do

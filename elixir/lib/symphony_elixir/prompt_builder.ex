@@ -14,15 +14,46 @@ defmodule SymphonyElixir.PromptBuilder do
       |> prompt_template!()
       |> parse_template!()
 
-    template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
-      @render_opts
-    )
-    |> IO.iodata_to_binary()
+    rendered =
+      template
+      |> Solid.render!(
+        %{
+          "attempt" => Keyword.get(opts, :attempt),
+          "issue" => issue |> Map.from_struct() |> to_solid_map()
+        },
+        @render_opts
+      )
+      |> IO.iodata_to_binary()
+
+    if Config.git_enabled?() do
+      rendered <> "\n\n" <> git_offload_context(issue)
+    else
+      rendered
+    end
+  end
+
+  defp git_offload_context(issue) do
+    branch_name = SymphonyElixir.Git.branch_name_for_issue(issue.identifier || "issue")
+
+    """
+    ## Git Operations — Handled by Infrastructure
+
+    The following git operations are managed automatically by the orchestrator.
+    **Do NOT perform these yourself** — doing so wastes tokens and may conflict
+    with the automated workflow:
+
+    - Branch creation and checkout (you are already on `#{branch_name}`)
+    - `git fetch` / `git pull` / `git merge origin/#{Config.git_base_branch()}`
+    - `git push` to origin (happens automatically after your work completes)
+    - Pull request creation and updates (handled after push)
+
+    **Your only git responsibilities:**
+    - `git add` to stage your changes
+    - `git commit` with clear, descriptive commit messages
+    - Resolve merge conflicts if they exist in the working tree
+
+    Do not run the /push, /pull, or /land skills. Focus on the task itself.
+    """
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
