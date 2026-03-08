@@ -14,9 +14,10 @@ defmodule SymphonyElixir.AgentRunner do
     case Workspace.create_for_issue(issue) do
       {:ok, workspace} ->
         try do
-          with :ok <- maybe_git_setup(workspace, issue),
+          with {:ok, git_setup} <- maybe_git_setup(workspace, issue, claude_update_recipient),
                :ok <- Workspace.run_before_run_hook(workspace, issue),
-               :ok <- run_claude_turns(workspace, issue, claude_update_recipient, opts) do
+               opts_with_git = if(git_setup, do: Keyword.put(opts, :git_setup, git_setup), else: opts),
+               :ok <- run_claude_turns(workspace, issue, claude_update_recipient, opts_with_git) do
             :ok
           else
             {:error, reason} ->
@@ -24,7 +25,7 @@ defmodule SymphonyElixir.AgentRunner do
               raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
           end
         after
-          maybe_git_publish(workspace, issue)
+          maybe_git_publish(workspace, issue, claude_update_recipient)
           Workspace.run_after_run_hook(workspace, issue)
         end
 
@@ -101,7 +102,9 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    PromptBuilder.build_prompt(issue, opts)
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
@@ -149,43 +152,58 @@ defmodule SymphonyElixir.AgentRunner do
     |> String.downcase()
   end
 
-  defp maybe_git_setup(workspace, %Issue{identifier: identifier}) do
+  defp maybe_git_setup(workspace, %Issue{identifier: identifier} = issue, recipient) do
     if Config.git_enabled?() do
       Logger.info("Running git branch setup for issue_identifier=#{identifier} workspace=#{workspace}")
+      emit_git_event(recipient, issue, :git_setup_started, %{workspace: workspace})
 
       case Git.setup_branch(workspace, identifier) do
-        :ok ->
-          :ok
+        {:ok, result} ->
+          emit_git_event(recipient, issue, :git_setup_completed, %{
+            branch: result.branch,
+            merge: result.merge
+          })
 
-        {:error, {:git_merge_conflict, _status, _output}} ->
-          # Merge conflicts are not fatal — Claude will resolve them during the run
-          Logger.info("Git merge conflict detected, Claude will resolve during run issue_identifier=#{identifier}")
-          :ok
+          {:ok, result}
 
         {:error, reason} = error ->
           Logger.error("Git setup failed issue_identifier=#{identifier} reason=#{inspect(reason)}")
+          emit_git_event(recipient, issue, :git_setup_failed, %{reason: inspect(reason)})
           error
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp maybe_git_publish(workspace, %Issue{identifier: identifier} = issue, recipient) do
+    if Config.git_enabled?() do
+      Logger.info("Running git publish for issue_identifier=#{identifier} workspace=#{workspace}")
+      emit_git_event(recipient, issue, :git_push_started, %{workspace: workspace})
+
+      case Git.publish(workspace, identifier, issue) do
+        :ok ->
+          emit_git_event(recipient, issue, :git_push_completed, %{})
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Git publish failed issue_identifier=#{identifier} reason=#{inspect(reason)}")
+          emit_git_event(recipient, issue, :git_push_failed, %{reason: inspect(reason)})
+          :ok
       end
     else
       :ok
     end
   end
 
-  defp maybe_git_publish(workspace, %Issue{identifier: identifier} = issue) do
-    if Config.git_enabled?() do
-      Logger.info("Running git publish for issue_identifier=#{identifier} workspace=#{workspace}")
+  defp emit_git_event(recipient, issue, event, details) do
+    message = %{
+      event: event,
+      timestamp: DateTime.utc_now(),
+      payload: details
+    }
 
-      case Git.publish(workspace, identifier, issue) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("Git publish failed issue_identifier=#{identifier} reason=#{inspect(reason)}")
-          :ok
-      end
-    else
-      :ok
-    end
+    send_claude_update(recipient, issue, message)
   end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do

@@ -155,7 +155,7 @@ after each Claude run, and Claude's prompt is updated to tell it to only focus o
 `git commit`.
 
 Where it lives in code:
-`Config.git_*`, `Git`, `AgentRunner`, `PromptBuilder`.
+`Config.git_*`, `Git`, `AgentRunner`, `PromptBuilder`, `Claude.Tools.GitTool`.
 
 Fields:
 
@@ -186,6 +186,11 @@ Important behavior:
 - if a merge conflict occurs during base-branch sync, the merge is aborted and Claude
   resolves conflicts during its run
 - the prompt is automatically extended to tell Claude not to run push/pull/land skills
+- when enabled, two dynamic tools are registered for Claude to use mid-turn:
+  - `git_status` — returns branch, staged/unstaged files, and ahead/behind counts
+  - `git_commit` — stages files and creates a commit with a message
+- git lifecycle events (`:git_setup_started`, `:git_push_completed`, etc.) are emitted
+  through the standard event system for dashboard/orchestrator visibility
 - `gh` CLI must be available and authenticated for `auto_pr` to work
 
 Example:

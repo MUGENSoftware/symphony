@@ -26,7 +26,13 @@ defmodule SymphonyElixir.Git do
   2. Creates or checks out the feature branch
   3. Merges base branch into the feature branch
   """
-  @spec setup_branch(Path.t(), String.t()) :: :ok | {:error, term()}
+  @type setup_result :: %{
+          branch: String.t(),
+          base_branch: String.t(),
+          merge: :clean | {:conflicts, String.t()}
+        }
+
+  @spec setup_branch(Path.t(), String.t()) :: {:ok, setup_result()} | {:error, term()}
   def setup_branch(workspace, issue_identifier) do
     unless Config.git_enabled?() do
       throw(:git_not_enabled)
@@ -36,10 +42,21 @@ defmodule SymphonyElixir.Git do
     base_branch = Config.git_base_branch()
 
     with :ok <- fetch_origin(workspace, base_branch),
-         :ok <- ensure_branch(workspace, branch_name, base_branch),
-         :ok <- merge_base_branch(workspace, base_branch) do
-      Logger.info("Git branch setup complete workspace=#{workspace} branch=#{branch_name}")
-      :ok
+         :ok <- ensure_branch(workspace, branch_name, base_branch) do
+      merge_status = merge_base_branch(workspace, base_branch)
+
+      result = %{
+        branch: branch_name,
+        base_branch: base_branch,
+        merge:
+          case merge_status do
+            :ok -> :clean
+            {:error, {:git_merge_conflict, _status, output}} -> {:conflicts, output}
+          end
+      }
+
+      Logger.info("Git branch setup complete workspace=#{workspace} branch=#{branch_name} merge=#{inspect(result.merge)}")
+      {:ok, result}
     end
   end
 

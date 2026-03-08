@@ -1,7 +1,63 @@
 defmodule SymphonyElixir.Claude.DynamicToolTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Claude.DynamicTool
+  alias SymphonyElixir.Claude.DynamicToolRegistry
+  alias SymphonyElixir.Claude.Tools.LinearGraphqlTool
+
+  test "registry advertises linear_graphql tool specs" do
+    specs = DynamicToolRegistry.tool_specs()
+    names = Enum.map(specs, & &1["name"])
+    assert "linear_graphql" in names
+  end
+
+  test "registry does not advertise git tools when git is disabled" do
+    write_workflow_file!(Workflow.workflow_file_path(), git_enabled: false)
+    specs = DynamicToolRegistry.tool_specs()
+    names = Enum.map(specs, & &1["name"])
+    refute "git_status" in names
+    refute "git_commit" in names
+  end
+
+  test "registry advertises git tools when git is enabled" do
+    write_workflow_file!(Workflow.workflow_file_path(), git_enabled: true)
+    specs = DynamicToolRegistry.tool_specs()
+    names = Enum.map(specs, & &1["name"])
+    assert "git_status" in names
+    assert "git_commit" in names
+  end
+
+  test "registry dispatches to correct tool module" do
+    test_pid = self()
+
+    response =
+      DynamicToolRegistry.execute(
+        "linear_graphql",
+        %{"query" => "query Viewer { viewer { id } }"},
+        linear_client: fn query, variables, opts ->
+          send(test_pid, {:linear_client_called, query, variables, opts})
+          {:ok, %{"data" => %{"viewer" => %{"id" => "usr_123"}}}}
+        end
+      )
+
+    assert_received {:linear_client_called, _, _, _}
+    assert response["success"] == true
+  end
+
+  test "registry returns unsupported error for unknown tools" do
+    response = DynamicToolRegistry.execute("not_a_real_tool", %{})
+
+    assert response["success"] == false
+
+    assert [
+             %{
+               "type" => "inputText",
+               "text" => text
+             }
+           ] = response["contentItems"]
+
+    decoded = Jason.decode!(text)
+    assert decoded["error"]["message"] =~ "Unsupported dynamic tool"
+  end
 
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
@@ -17,36 +73,16 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
                },
                "name" => "linear_graphql"
              }
-           ] = DynamicTool.tool_specs()
+           ] = LinearGraphqlTool.tool_specs()
 
     assert description =~ "Linear"
-  end
-
-  test "unsupported tools return a failure payload with the supported tool list" do
-    response = DynamicTool.execute("not_a_real_tool", %{})
-
-    assert response["success"] == false
-
-    assert [
-             %{
-               "type" => "inputText",
-               "text" => text
-             }
-           ] = response["contentItems"]
-
-    assert Jason.decode!(text) == %{
-             "error" => %{
-               "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
-             }
-           }
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do
     test_pid = self()
 
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{
           "query" => "query Viewer { viewer { id } }",
@@ -76,7 +112,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
     test_pid = self()
 
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         "  query Viewer { viewer { id } }  ",
         linear_client: fn query, variables, opts ->
@@ -93,7 +129,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
     test_pid = self()
 
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }", "operationName" => "Viewer"},
         linear_client: fn query, variables, opts ->
@@ -115,7 +151,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
     """
 
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => query},
         linear_client: fn forwarded_query, variables, opts ->
@@ -130,7 +166,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
   end
 
   test "linear_graphql rejects blank raw query strings even when using the default client" do
-    response = DynamicTool.execute("linear_graphql", "   ")
+    response = LinearGraphqlTool.execute("linear_graphql", "   ", [])
 
     assert response["success"] == false
 
@@ -149,7 +185,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql marks GraphQL error responses as failures while preserving the body" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "mutation BadMutation { nope }"},
         linear_client: fn _query, _variables, _opts ->
@@ -174,7 +210,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql marks atom-key GraphQL error responses as failures" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }"},
         linear_client: fn _query, _variables, _opts ->
@@ -187,7 +223,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql validates required arguments before calling Linear" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"variables" => %{"commentId" => "comment-1"}},
         linear_client: fn _query, _variables, _opts ->
@@ -211,7 +247,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
            }
 
     blank_query =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "   "},
         linear_client: fn _query, _variables, _opts ->
@@ -224,7 +260,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql rejects invalid argument types" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         [:not, :valid],
         linear_client: fn _query, _variables, _opts ->
@@ -249,7 +285,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql rejects invalid variables" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }", "variables" => ["bad"]},
         linear_client: fn _query, _variables, _opts ->
@@ -274,7 +310,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql formats transport and auth failures" do
     missing_token =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }"},
         linear_client: fn _query, _variables, _opts -> {:error, :missing_linear_api_token} end
@@ -295,7 +331,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
            }
 
     status_error =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }"},
         linear_client: fn _query, _variables, _opts -> {:error, {:linear_api_status, 503}} end
@@ -315,7 +351,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
            }
 
     request_error =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }"},
         linear_client: fn _query, _variables, _opts -> {:error, {:linear_api_request, :timeout}} end
@@ -337,7 +373,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql formats unexpected failures from the client" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }"},
         linear_client: fn _query, _variables, _opts -> {:error, :boom} end
@@ -361,7 +397,7 @@ defmodule SymphonyElixir.Claude.DynamicToolTest do
 
   test "linear_graphql falls back to inspect for non-JSON payloads" do
     response =
-      DynamicTool.execute(
+      LinearGraphqlTool.execute(
         "linear_graphql",
         %{"query" => "query Viewer { viewer { id } }"},
         linear_client: fn _query, _variables, _opts -> {:ok, :ok} end

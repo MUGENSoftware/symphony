@@ -43,7 +43,7 @@ defmodule SymphonyElixir.GitTest do
     assert Config.git_auto_pr?() == false
   end
 
-  test "setup_branch creates feature branch from base in a real git repo" do
+  test "setup_branch creates feature branch and returns structured result" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -51,12 +51,10 @@ defmodule SymphonyElixir.GitTest do
       )
 
     try do
-      # Create a bare "remote" repo
       remote_repo = Path.join(test_root, "remote.git")
       File.mkdir_p!(remote_repo)
       System.cmd("git", ["init", "--bare", "-b", "main"], cd: remote_repo)
 
-      # Create a working clone (simulates the workspace after after_create hook)
       workspace = Path.join(test_root, "workspace")
       System.cmd("git", ["clone", remote_repo, workspace])
       System.cmd("git", ["-C", workspace, "config", "user.name", "Test"])
@@ -72,13 +70,13 @@ defmodule SymphonyElixir.GitTest do
         git_branch_prefix: "claude/"
       )
 
-      assert :ok = Git.setup_branch(workspace, "PRJ-42")
+      assert {:ok, result} = Git.setup_branch(workspace, "PRJ-42")
+      assert result.branch == "claude/prj-42"
+      assert result.base_branch == "main"
+      assert result.merge == :clean
 
-      # Verify we're on the correct branch
       {branch, 0} = System.cmd("git", ["-C", workspace, "branch", "--show-current"])
       assert String.trim(branch) == "claude/prj-42"
-
-      # Verify the branch contains the base branch content
       assert File.read!(Path.join(workspace, "README.md")) == "hello\n"
     after
       File.rm_rf(test_root)
@@ -114,10 +112,8 @@ defmodule SymphonyElixir.GitTest do
         git_auto_pr: false
       )
 
-      # Setup branch first
-      assert :ok = Git.setup_branch(workspace, "PRJ-99")
+      assert {:ok, _result} = Git.setup_branch(workspace, "PRJ-99")
 
-      # Simulate Claude making a change and committing
       File.write!(Path.join(workspace, "fix.txt"), "fixed\n")
       System.cmd("git", ["-C", workspace, "add", "fix.txt"])
       System.cmd("git", ["-C", workspace, "commit", "-m", "fix: resolve issue"])
@@ -132,7 +128,6 @@ defmodule SymphonyElixir.GitTest do
 
       assert :ok = Git.publish(workspace, "PRJ-99", issue)
 
-      # Verify the branch was pushed to remote
       {refs, 0} = System.cmd("git", ["-C", remote_repo, "branch", "--list"])
       assert refs =~ "claude/prj-99"
     after
@@ -166,16 +161,15 @@ defmodule SymphonyElixir.GitTest do
         git_base_branch: "main"
       )
 
-      # First setup
-      assert :ok = Git.setup_branch(workspace, "PRJ-10")
+      assert {:ok, _} = Git.setup_branch(workspace, "PRJ-10")
 
-      # Make a commit on the branch
       File.write!(Path.join(workspace, "work.txt"), "progress\n")
       System.cmd("git", ["-C", workspace, "add", "work.txt"])
       System.cmd("git", ["-C", workspace, "commit", "-m", "wip"])
 
-      # Second setup should keep existing branch and its commits
-      assert :ok = Git.setup_branch(workspace, "PRJ-10")
+      assert {:ok, result} = Git.setup_branch(workspace, "PRJ-10")
+      assert result.branch == "claude/prj-10"
+      assert result.merge == :clean
 
       {branch, 0} = System.cmd("git", ["-C", workspace, "branch", "--show-current"])
       assert String.trim(branch) == "claude/prj-10"
@@ -185,7 +179,7 @@ defmodule SymphonyElixir.GitTest do
     end
   end
 
-  test "prompt includes git offload context when enabled" do
+  test "prompt includes git offload context with structured setup result" do
     write_workflow_file!(Workflow.workflow_file_path(), git_enabled: true)
 
     issue = %Issue{
@@ -196,12 +190,32 @@ defmodule SymphonyElixir.GitTest do
       state: "Todo"
     }
 
-    prompt = PromptBuilder.build_prompt(issue)
+    git_setup = %{branch: "claude/prj-1", base_branch: "main", merge: :clean}
+    prompt = PromptBuilder.build_prompt(issue, git_setup: git_setup)
+
     assert prompt =~ "Git Operations — Handled by Infrastructure"
     assert prompt =~ "claude/prj-1"
     assert prompt =~ "Do NOT perform these yourself"
-    assert prompt =~ "git add"
-    assert prompt =~ "git commit"
+    assert prompt =~ "clean"
+    assert prompt =~ "git_commit"
+    assert prompt =~ "git_status"
+  end
+
+  test "prompt includes conflict info when merge had conflicts" do
+    write_workflow_file!(Workflow.workflow_file_path(), git_enabled: true)
+
+    issue = %Issue{
+      id: "issue-id",
+      identifier: "PRJ-1",
+      title: "Test issue",
+      description: "A test",
+      state: "Todo"
+    }
+
+    git_setup = %{branch: "claude/prj-1", base_branch: "main", merge: {:conflicts, "CONFLICT in file.ex"}}
+    prompt = PromptBuilder.build_prompt(issue, git_setup: git_setup)
+
+    assert prompt =~ "CONFLICTS DETECTED"
   end
 
   test "prompt does not include git context when disabled" do
