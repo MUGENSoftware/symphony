@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Claude.Cli do
 
   require Logger
   alias SymphonyElixir.Config
-  alias SymphonyElixir.Claude.DynamicTool
+  alias SymphonyElixir.Claude.DynamicToolRegistry
   alias SymphonyElixir.Claude.McpConfig
   alias SymphonyElixir.Claude.SessionLog
   alias SymphonyElixir.Claude.UsageLimit
@@ -514,7 +514,7 @@ defmodule SymphonyElixir.Claude.Cli do
              "cwd" => Path.expand(workspace),
              "approvalPolicy" => Config.claude_approval_policy(),
              "sandbox" => Config.claude_thread_sandbox(),
-             "dynamicTools" => DynamicTool.tool_specs()
+             "dynamicTools" => DynamicToolRegistry.tool_specs()
            }
            |> reject_nil_values()},
           {3, "turn/start",
@@ -533,12 +533,13 @@ defmodule SymphonyElixir.Claude.Cli do
       turn_timeout = Config.claude_turn_timeout_ms()
       stall_timeout = Config.claude_stall_timeout_ms()
       effective_timeout = min(turn_timeout, stall_timeout)
+      opts_with_workspace = Keyword.put(opts, :workspace, workspace)
 
       receive_app_server_loop(
         port,
         on_message,
         metadata,
-        opts,
+        opts_with_workspace,
         effective_timeout,
         turn_timeout,
         now_ms(),
@@ -845,8 +846,9 @@ defmodule SymphonyElixir.Claude.Cli do
 
         tool_name = params["tool"] || params["name"] || "unknown_tool"
         arguments = params["arguments"] || %{}
-        tool_executor = Keyword.get(opts, :tool_executor, &DynamicTool.execute/2)
-        result = safe_execute_tool(tool_executor, tool_name, arguments)
+        tool_executor = Keyword.get(opts, :tool_executor, &DynamicToolRegistry.execute/3)
+        tool_opts = Keyword.take(opts, [:workspace])
+        result = safe_execute_tool(tool_executor, tool_name, arguments, tool_opts)
         :ok = send_json_line(port, %{"id" => id, "result" => result})
 
         event =
@@ -950,7 +952,31 @@ defmodule SymphonyElixir.Claude.Cli do
 
   defp mcp_approval_question?(_question), do: false
 
-  defp safe_execute_tool(tool_executor, tool_name, arguments) when is_function(tool_executor, 2) do
+  defp safe_execute_tool(tool_executor, tool_name, arguments, tool_opts)
+       when is_function(tool_executor, 3) do
+    tool_executor.(tool_name, arguments, tool_opts)
+  rescue
+    error ->
+      %{
+        "success" => false,
+        "contentItems" => [
+          %{
+            "type" => "inputText",
+            "text" =>
+              Jason.encode!(%{
+                "error" => %{
+                  "message" => "Dynamic tool execution raised an exception.",
+                  "reason" => Exception.message(error)
+                }
+              })
+          }
+        ]
+      }
+  end
+
+  # Support legacy arity-2 tool executors (used in tests)
+  defp safe_execute_tool(tool_executor, tool_name, arguments, _tool_opts)
+       when is_function(tool_executor, 2) do
     tool_executor.(tool_name, arguments)
   rescue
     error ->
@@ -972,8 +998,7 @@ defmodule SymphonyElixir.Claude.Cli do
   end
 
   defp unsupported_tool?(tool_name) do
-    supported = Enum.map(DynamicTool.tool_specs(), & &1["name"])
-    not Enum.member?(supported, tool_name)
+    not Enum.member?(DynamicToolRegistry.supported_tool_names(), tool_name)
   end
 
   defp command_metadata(%{mode: :app_server, port: port}), do: port_metadata(port)

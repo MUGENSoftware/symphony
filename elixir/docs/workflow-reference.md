@@ -143,6 +143,67 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 ```
 
+### `git`
+
+What this means:
+Offloads mechanical git operations from Claude to the orchestrator, reducing token usage.
+
+Why Symphony needs it:
+Without this, Claude spends tokens on branch creation, fetching, pushing, and PR management — operations
+that don't require intelligence. When enabled, the orchestrator handles these automatically before and
+after each Claude run, and Claude's prompt is updated to tell it to only focus on `git add` and
+`git commit`.
+
+Where it lives in code:
+`Config.git_*`, `Git`, `AgentRunner`, `PromptBuilder`, `Claude.Tools.GitTool`.
+
+Fields:
+
+- `enabled`
+  - optional
+  - default: `false`
+  - when `true`, Symphony manages branch setup, push, and PR lifecycle
+- `base_branch`
+  - optional
+  - default: `main`
+  - the branch to create feature branches from and merge into
+- `branch_prefix`
+  - optional
+  - default: `claude/`
+  - prefix for auto-created feature branch names (e.g. `claude/prj-123`)
+- `auto_push`
+  - optional
+  - default: `true`
+  - when `true`, Symphony pushes commits to origin after Claude finishes
+- `auto_pr`
+  - optional
+  - default: `true`
+  - when `true`, Symphony creates or updates a PR after pushing
+
+Important behavior:
+
+- branch names are derived from the issue identifier: `<prefix><safe-identifier>`
+- if a merge conflict occurs during base-branch sync, the merge is aborted and Claude
+  resolves conflicts during its run
+- the prompt is automatically extended to tell Claude not to run push/pull/land skills
+- when enabled, two dynamic tools are registered for Claude to use mid-turn:
+  - `git_status` — returns branch, staged/unstaged files, and ahead/behind counts
+  - `git_commit` — stages files and creates a commit with a message
+- git lifecycle events (`:git_setup_started`, `:git_push_completed`, etc.) are emitted
+  through the standard event system for dashboard/orchestrator visibility
+- `gh` CLI must be available and authenticated for `auto_pr` to work
+
+Example:
+
+```yaml
+git:
+  enabled: true
+  base_branch: main
+  branch_prefix: "claude/"
+  auto_push: true
+  auto_pr: true
+```
+
 ### `hooks`
 
 What this means:

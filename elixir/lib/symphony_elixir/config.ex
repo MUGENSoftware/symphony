@@ -147,6 +147,17 @@ defmodule SymphonyElixir.Config do
                                  ]
                                ]
                              ],
+                             git: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 enabled: [type: :boolean, default: false],
+                                 base_branch: [type: :string, default: "main"],
+                                 branch_prefix: [type: :string, default: "claude/"],
+                                 auto_push: [type: :boolean, default: true],
+                                 auto_pr: [type: :boolean, default: true]
+                               ]
+                             ],
                              hooks: [
                                type: :map,
                                default: %{},
@@ -269,6 +280,31 @@ defmodule SymphonyElixir.Config do
     validated_workflow_options()
     |> get_in([:workspace, :root])
     |> resolve_path_value(@default_workspace_root)
+  end
+
+  @spec git_enabled?() :: boolean()
+  def git_enabled? do
+    get_in(validated_workflow_options(), [:git, :enabled])
+  end
+
+  @spec git_base_branch() :: String.t()
+  def git_base_branch do
+    get_in(validated_workflow_options(), [:git, :base_branch])
+  end
+
+  @spec git_branch_prefix() :: String.t()
+  def git_branch_prefix do
+    get_in(validated_workflow_options(), [:git, :branch_prefix])
+  end
+
+  @spec git_auto_push?() :: boolean()
+  def git_auto_push? do
+    get_in(validated_workflow_options(), [:git, :auto_push])
+  end
+
+  @spec git_auto_pr?() :: boolean()
+  def git_auto_pr? do
+    get_in(validated_workflow_options(), [:git, :auto_pr])
   end
 
   @spec workspace_hooks() :: workspace_hooks()
@@ -543,6 +579,7 @@ defmodule SymphonyElixir.Config do
       workspace: extract_workspace_options(section_map(config, "workspace")),
       agent: extract_agent_options(section_map(config, "agent")),
       claude: extract_claude_options(section_map(config, "claude")),
+      git: extract_git_options(section_map(config, "git")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
       observability: extract_observability_options(section_map(config, "observability")),
       server: extract_server_options(section_map(config, "server"))
@@ -601,6 +638,15 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+  end
+
+  defp extract_git_options(section) do
+    %{}
+    |> put_if_present(:enabled, boolean_value(Map.get(section, "enabled")))
+    |> put_if_present(:base_branch, scalar_string_value(Map.get(section, "base_branch")))
+    |> put_if_present(:branch_prefix, scalar_string_value(Map.get(section, "branch_prefix")))
+    |> put_if_present(:auto_push, boolean_value(Map.get(section, "auto_push")))
+    |> put_if_present(:auto_pr, boolean_value(Map.get(section, "auto_pr")))
   end
 
   defp extract_hooks_options(section) do
