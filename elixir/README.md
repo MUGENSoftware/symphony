@@ -35,7 +35,9 @@ Prerequisites:
 
 ```bash
 git clone https://github.com/openai/symphony
-cd symphony/elixir
+cd symphony
+./scripts/setup-git-hooks.sh
+cd elixir
 mise trust
 mise install
 mise exec -- mix setup
@@ -55,6 +57,9 @@ LINEAR_API_KEY=lin_api_xxx \
   --port 4000 \
   ./WORKFLOW.md
 ```
+
+The Git hook setup is a one-time step. It installs a repo-managed `pre-commit` hook that formats
+only staged `*.ex` and `*.exs` files under `elixir/`, then re-stages those files automatically.
 
 ## Minimal `WORKFLOW.md`
 
