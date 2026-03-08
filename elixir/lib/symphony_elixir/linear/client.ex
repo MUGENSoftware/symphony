@@ -297,6 +297,7 @@ defmodule SymphonyElixir.Linear.Client do
            }),
          {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
       updated_acc = prepend_page_issues(issues, acc_issues)
+
       PullLog.log(:page_fetch_result,
         operation: operation,
         page: page_number,
@@ -563,9 +564,7 @@ defmodule SymphonyElixir.Linear.Client do
       {:ok, %{"data" => %{"viewer" => viewer}}} when is_map(viewer) ->
         case assignee_id(viewer) do
           nil ->
-            log_fetch_failure("viewer_lookup", :missing_linear_viewer_identity,
-              configured_assignee: "me"
-            )
+            log_fetch_failure("viewer_lookup", :missing_linear_viewer_identity, configured_assignee: "me")
 
             {:error, :missing_linear_viewer_identity}
 
@@ -579,9 +578,7 @@ defmodule SymphonyElixir.Linear.Client do
         end
 
       {:ok, _body} ->
-        log_fetch_failure("viewer_lookup", :missing_linear_viewer_identity,
-          configured_assignee: "me"
-        )
+        log_fetch_failure("viewer_lookup", :missing_linear_viewer_identity, configured_assignee: "me")
 
         {:error, :missing_linear_viewer_identity}
 

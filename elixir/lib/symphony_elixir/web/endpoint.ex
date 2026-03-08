@@ -12,15 +12,15 @@ defmodule SymphonyElixir.Web.Endpoint do
     same_site: "Lax"
   ]
 
-  socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [:peer_data, session: @session_options]]
+  socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [:peer_data, session: @session_options]])
 
-  plug Plug.Session, @session_options
+  plug(Plug.Session, @session_options)
 
-  plug Plug.Parsers,
+  plug(Plug.Parsers,
     parsers: [:urlencoded, :json],
     pass: ["*/*"],
     json_decoder: Jason
+  )
 
-  plug SymphonyElixir.Web.Router
+  plug(SymphonyElixir.Web.Router)
 end

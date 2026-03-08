@@ -253,6 +253,140 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "usage-limit parser resolves the next reset timestamp in the reported timezone" do
+    now = ~U[2026-03-08 07:00:00Z]
+
+    assert {:ok,
+            %{
+              reason: :usage_cap,
+              timezone: "America/Sao_Paulo",
+              reset_at: ~U[2026-03-08 09:00:00Z],
+              retry_after_ms: 7_200_000
+            }} =
+             SymphonyElixir.Claude.UsageLimit.parse_message(
+               "You've hit your limit · resets 6am (America/Sao_Paulo)",
+               now
+             )
+  end
+
+  test "stream-json surfaces usage-limit exhaustion with cooldown metadata" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-usage-limit-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-104")
+      claude_binary = Path.join(test_root, "fake-claude")
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      cat <<'EOF'
+      {"type":"result","subtype":"success","is_error":true,"duration_ms":893,"duration_api_ms":0,"num_turns":1,"result":"You've hit your limit · resets 6am (America/Sao_Paulo)","stop_reason":"stop_sequence","session_id":"session-104","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}
+      EOF
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-stream-usage-limit",
+        identifier: "MT-104",
+        title: "Pause after usage limit",
+        description: "Ensure the runner emits cooldown metadata",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-104",
+        labels: ["backend"]
+      }
+
+      on_message = fn message -> send(self(), {:stream_json_message, message}) end
+
+      assert {:ok,
+              %{
+                result: :usage_limit_reached,
+                session_id: "session-104",
+                resume_session_id: "session-104"
+              }} =
+               AppServer.run(workspace, "hello", issue, on_message: on_message)
+
+      assert_received {:stream_json_message,
+                       %{
+                         event: :usage_limit_reached,
+                         session_id: "session-104",
+                         resume_session_id: "session-104",
+                         message: "You've hit your limit · resets 6am (America/Sao_Paulo)",
+                         retry_after_ms: retry_after_ms,
+                         reset_at: %DateTime{}
+                       }}
+
+      assert retry_after_ms >= 0
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "stream-json falls back to normal completion when a usage-limit reset time cannot be parsed" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-stream-json-usage-limit-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-105")
+      claude_binary = Path.join(test_root, "fake-claude")
+      File.mkdir_p!(workspace)
+
+      File.write!(claude_binary, """
+      #!/bin/sh
+      cat <<'EOF'
+      {"type":"result","subtype":"success","is_error":true,"duration_ms":500,"result":"You've hit your limit · resets someday","session_id":"session-105","usage":{"input_tokens":0,"output_tokens":0}}
+      EOF
+      """)
+
+      File.chmod!(claude_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        claude_command: claude_binary
+      )
+
+      issue = %Issue{
+        id: "issue-stream-usage-limit-fallback",
+        identifier: "MT-105",
+        title: "Fallback after parse failure",
+        description: "Ensure unparsed limit text does not activate cooldown",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-105",
+        labels: ["backend"]
+      }
+
+      on_message = fn message -> send(self(), {:stream_json_message, message}) end
+
+      assert {:ok, %{session_id: "session-105"}} =
+               AppServer.run(workspace, "hello", issue, on_message: on_message)
+
+      assert_received {:stream_json_message,
+                       %{
+                         event: :turn_completed,
+                         session_id: "session-105",
+                         result: "You've hit your limit · resets someday"
+                       }}
+
+      refute_received {:stream_json_message, %{event: :usage_limit_reached}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(

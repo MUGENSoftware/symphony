@@ -174,6 +174,8 @@ turns let Symphony push the work forward without waiting for the next scheduler 
 
 When a worker exits abnormally, the orchestrator schedules a retry with backoff. When a worker exits
 normally but the issue is still active, the orchestrator also schedules a short continuation check.
+If Claude reports that the account has hit its usage limit and provides a reset time, Symphony
+enters a global cooldown and blocks new Claude subprocess launches until that reset time.
 
 ### Why Symphony Needs It
 
@@ -188,6 +190,8 @@ flakiness, or temporary Claude errors.
 
 - a hard configuration error causes repeated failed retries until fixed
 - very large issue backlogs can delay retries because capacity is shared
+- a malformed Claude usage-limit message falls back to normal retry/backoff instead of an exact
+  cooldown deadline
 
 ## Terminal-State Cleanup
 

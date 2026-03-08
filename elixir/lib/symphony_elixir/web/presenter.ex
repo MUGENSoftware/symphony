@@ -23,6 +23,7 @@ defmodule SymphonyElixir.Web.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           claude_totals: snapshot.claude_totals,
+          claude_availability: Map.get(snapshot, :claude_availability),
           rate_limits: snapshot.rate_limits
         }
 
