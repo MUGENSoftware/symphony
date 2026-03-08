@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+staged_repo_paths=()
+formatted_paths=()
+
+while IFS= read -r -d '' path; do
+  if [[ "$path" =~ ^elixir/.+\.(ex|exs)$ ]]; then
+    staged_repo_paths+=("$path")
+    formatted_paths+=("${path#elixir/}")
+  fi
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ "${#formatted_paths[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+echo "pre-commit: formatting staged Elixir files"
+
+run_mix_format() {
+  (
+    cd elixir
+    "$@" format -- "${formatted_paths[@]}"
+  )
+}
+
+if command -v mise >/dev/null 2>&1; then
+  if ! run_mix_format mise exec -- mix; then
+    echo "pre-commit: mise exec failed, falling back to mix" >&2
+    run_mix_format mix
+  fi
+else
+  run_mix_format mix
+fi
+
+git add -- "${staged_repo_paths[@]}"
