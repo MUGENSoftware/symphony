@@ -37,8 +37,7 @@ defmodule SymphonyElixir.Claude.Tools.GitTool do
       },
       %{
         "name" => "git_commit",
-        "description" =>
-          "Stage files and create a git commit. Use this instead of running `git add` and `git commit` yourself.",
+        "description" => "Stage files and create a git commit. Use this instead of running `git add` and `git commit` yourself.",
         "inputSchema" => %{
           "type" => "object",
           "required" => ["message"],
@@ -50,8 +49,7 @@ defmodule SymphonyElixir.Claude.Tools.GitTool do
             "files" => %{
               "type" => "array",
               "items" => %{"type" => "string"},
-              "description" =>
-                "Files to stage before committing. If omitted or empty, stages all changes (git add -A)."
+              "description" => "Files to stage before committing. If omitted or empty, stages all changes (git add -A)."
             }
           }
         }
@@ -216,7 +214,9 @@ defmodule SymphonyElixir.Claude.Tools.GitTool do
       end)
 
     case Task.yield(task, @cmd_timeout_ms) do
-      {:ok, result} -> result
+      {:ok, result} ->
+        result
+
       nil ->
         Task.shutdown(task, :brutal_kill)
         {"command timed out after #{@cmd_timeout_ms}ms", 1}

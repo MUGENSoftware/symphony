@@ -51,8 +51,7 @@ defmodule SymphonyElixir.Claude.Tools.LinearGraphqlTool do
       {:error, :missing_linear_api_token} ->
         DynamicTool.error_response(%{
           "error" => %{
-            "message" =>
-              "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
+            "message" => "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
           }
         })
 
@@ -115,9 +114,7 @@ defmodule SymphonyElixir.Claude.Tools.LinearGraphqlTool do
   end
 
   defp normalize_arguments(_arguments) do
-    {:error,
-     {:tool_input,
-      "`linear_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`."}}
+    {:error, {:tool_input, "`linear_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`."}}
   end
 
   defp run_graphql(query, variables, opts) do
