@@ -8,11 +8,13 @@ defmodule SymphonyElixir.Claude.Cli do
   """
 
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
+
   alias SymphonyElixir.Claude.DynamicToolRegistry
   alias SymphonyElixir.Claude.McpConfig
   alias SymphonyElixir.Claude.SessionLog
   alias SymphonyElixir.Claude.UsageLimit
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Telemetry}
 
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
@@ -79,16 +81,41 @@ defmodule SymphonyElixir.Claude.Cli do
   end
 
   defp handle_started_turn(command, session, prompt, issue, opts, on_message) do
-    metadata = command_metadata(command)
-    maybe_emit_stream_session_started(command, session, on_message, metadata)
-    log_turn_start(issue, session)
+    mode = command.mode
+    turn_start_ms = now_ms()
 
-    case execute_turn(command, session, prompt, issue, opts, on_message, metadata) do
-      {:ok, result} ->
-        {:ok, build_turn_response(command, session, result, issue)}
+    Tracer.with_span :"claude.execute_turn", %{
+      attributes: span_attrs(issue, %{
+        mode: mode,
+        session_id: Map.get(session, :session_id),
+        resume_session_id: Map.get(session, :session_id)
+      })
+    } do
+      metadata = command_metadata(command)
+      maybe_emit_stream_session_started(command, session, on_message, metadata)
+      log_turn_start(issue, session)
 
-      {:error, reason} ->
-        handle_turn_error(reason, issue, session, on_message, metadata)
+      case execute_turn(command, session, prompt, issue, opts, on_message, metadata) do
+        {:ok, result} ->
+          response = build_turn_response(command, session, result, issue)
+          result_label = to_string(response.result)
+          duration_ms = now_ms() - turn_start_ms
+
+          Tracer.set_attribute(:result, result_label)
+          Tracer.set_attribute(:session_id, response.session_id || "")
+          emit_turn_metrics(result_label, to_string(mode), duration_ms)
+          emit_turn_completion_log(issue, response, mode, opts)
+
+          {:ok, response}
+
+        {:error, reason} ->
+          duration_ms = now_ms() - turn_start_ms
+          Tracer.set_status(:error, inspect(reason))
+          Tracer.set_attribute(:result, "failed")
+          emit_turn_metrics("failed", to_string(mode), duration_ms)
+
+          handle_turn_error(reason, issue, session, on_message, metadata)
+      end
     end
   end
 
@@ -211,19 +238,29 @@ defmodule SymphonyElixir.Claude.Cli do
   # ── CLI subprocess ─────────────────────────────────────────────────────
 
   defp start_cli(workspace, prompt, resume_session_id, issue) do
-    command = Config.claude_command() |> to_string() |> String.trim()
+    Tracer.with_span :"claude.start_cli", %{
+      attributes: span_attrs(issue, %{resume_session_id: resume_session_id})
+    } do
+      command = Config.claude_command() |> to_string() |> String.trim()
 
-    with {:ok, executable_name, base_args} <- parse_command(command),
-         {:ok, executable} <- resolve_executable(executable_name),
-         {:ok, cli_command} <-
-           prepare_cli_command(executable, base_args, prompt, resume_session_id, workspace, issue) do
-      {:ok, cli_command}
-    else
-      {:error, :not_found} ->
-        {:error, {:claude_cli_not_found, command}}
+      result =
+        with {:ok, executable_name, base_args} <- parse_command(command),
+             {:ok, executable} <- resolve_executable(executable_name),
+             {:ok, cli_command} <-
+               prepare_cli_command(executable, base_args, prompt, resume_session_id, workspace, issue) do
+          {:ok, cli_command}
+        else
+          {:error, :not_found} ->
+            {:error, {:claude_cli_not_found, command}}
 
-      {:error, _reason} = error ->
-        error
+          {:error, _reason} = error ->
+            error
+        end
+
+      case result do
+        {:ok, _} -> result
+        {:error, reason} -> Tracer.set_status(:error, inspect(reason)); result
+      end
     end
   end
 
@@ -471,47 +508,51 @@ defmodule SymphonyElixir.Claude.Cli do
   # ── Stream parsing ─────────────────────────────────────────────────────
 
   defp execute_stream_json_turn(command, on_message, metadata, _issue) do
-    timeout = min(Config.claude_turn_timeout_ms(), Config.claude_stall_timeout_ms())
-    wrapper = stream_wrapper_path()
-    log_path = command.log_ref.pending_path
+    Tracer.with_span :"claude.stream_json.consume" do
+      timeout = min(Config.claude_turn_timeout_ms(), Config.claude_stall_timeout_ms())
+      wrapper = stream_wrapper_path()
+      log_path = command.log_ref.pending_path
 
-    task =
-      Task.async(fn ->
-        System.cmd(
-          "/bin/bash",
-          [wrapper, log_path, command.executable | command.args],
-          cd: command.workspace,
-          stderr_to_stdout: true
-        )
-      end)
+      task =
+        Task.async(fn ->
+          System.cmd(
+            "/bin/bash",
+            [wrapper, log_path, command.executable | command.args],
+            cd: command.workspace,
+            stderr_to_stdout: true
+          )
+        end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {_output, status}} ->
-        parsed_result = parse_stream_output(read_stream_log(command.log_ref.pending_path), on_message, metadata)
-        finalize_stream_json_log(command.log_ref, parsed_result)
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {_output, status}} ->
+          parsed_result = parse_stream_output(read_stream_log(command.log_ref.pending_path), on_message, metadata)
+          finalize_stream_json_log(command.log_ref, parsed_result)
 
-        case parsed_result do
-          {:ok, result} ->
-            {:ok, result}
+          case parsed_result do
+            {:ok, result} ->
+              {:ok, result}
 
-          :continue when status == 0 ->
-            Logger.info("Claude CLI port exited normally (status=0)")
-            {:ok, %{}}
+            :continue when status == 0 ->
+              Logger.info("Claude CLI port exited normally (status=0)")
+              {:ok, %{}}
 
-          :continue ->
-            Logger.warning("Claude CLI port exited with status=#{status}")
-            {:error, {:port_exit, status}}
+            :continue ->
+              Logger.warning("Claude CLI port exited with status=#{status}")
+              {:error, {:port_exit, status}}
 
-          {:error, reason} ->
-            {:error, reason}
-        end
+            {:error, reason} ->
+              Tracer.set_status(:error, inspect(reason))
+              {:error, reason}
+          end
 
-      nil ->
-        Logger.warning("Claude CLI stream timed out after #{timeout}ms (stall_timeout=#{Config.claude_stall_timeout_ms()}, turn_timeout=#{Config.claude_turn_timeout_ms()})")
+        nil ->
+          Logger.warning("Claude CLI stream timed out after #{timeout}ms (stall_timeout=#{Config.claude_stall_timeout_ms()}, turn_timeout=#{Config.claude_turn_timeout_ms()})")
 
-        parse_stream_output(read_stream_log(command.log_ref.pending_path), on_message, metadata)
-        finalize_stream_json_log(command.log_ref, :continue)
-        {:error, :turn_timeout}
+          parse_stream_output(read_stream_log(command.log_ref.pending_path), on_message, metadata)
+          finalize_stream_json_log(command.log_ref, :continue)
+          Tracer.set_status(:error, "turn_timeout")
+          {:error, :turn_timeout}
+      end
     end
   end
 
@@ -524,6 +565,7 @@ defmodule SymphonyElixir.Claude.Cli do
          metadata,
          opts
        ) do
+    Tracer.with_span :"claude.app_server.consume" do
     setup_requests =
       if is_binary(previous_thread_id) and previous_thread_id != "" do
         [
@@ -568,15 +610,24 @@ defmodule SymphonyElixir.Claude.Cli do
       opts_with_workspace = Keyword.put(opts, :workspace, workspace)
       timeout_context = %{stall_timeout: effective_timeout, turn_timeout: turn_timeout, start_ms: now_ms()}
 
-      receive_app_server_loop(
-        port,
-        on_message,
-        metadata,
-        opts_with_workspace,
-        timeout_context,
-        "",
-        %{thread_id: previous_thread_id}
-      )
+      result =
+        receive_app_server_loop(
+          port,
+          on_message,
+          metadata,
+          opts_with_workspace,
+          timeout_context,
+          "",
+          %{thread_id: previous_thread_id}
+        )
+
+      case result do
+        {:error, reason} -> Tracer.set_status(:error, inspect(reason))
+        _ -> :ok
+      end
+
+      result
+    end
     end
   end
 
@@ -1270,18 +1321,22 @@ defmodule SymphonyElixir.Claude.Cli do
   end
 
   defp finalize_stream_json_log(log_ref, parsed_result) do
-    session_id =
-      case parsed_result do
-        {:ok, %{session_id: session_id}} -> session_id
-        _ -> nil
+    Tracer.with_span :"claude.finish_turn_log" do
+      session_id =
+        case parsed_result do
+          {:ok, %{session_id: session_id}} -> session_id
+          _ -> nil
+        end
+
+      case SessionLog.finish_turn(log_ref, session_id) do
+        {:ok, path} ->
+          Tracer.set_attribute(:claude_log_path, path)
+          :ok
+
+        {:error, reason} ->
+          Tracer.set_status(:error, inspect(reason))
+          Logger.warning("Failed to finalize Claude session log: #{inspect(reason)}")
       end
-
-    case SessionLog.finish_turn(log_ref, session_id) do
-      {:ok, _path} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Failed to finalize Claude session log: #{inspect(reason)}")
     end
   end
 
@@ -1301,6 +1356,78 @@ defmodule SymphonyElixir.Claude.Cli do
         rescue
           ArgumentError -> :ok
         end
+    end
+  end
+
+  # ── OTEL / Metrics / Log correlation ────────────────────────────────
+
+  defp span_attrs(issue, extra) do
+    base = %{
+      issue_id: Map.get(issue, :id, ""),
+      issue_identifier: Map.get(issue, :identifier, "")
+    }
+
+    extra
+    |> Enum.reduce(base, fn
+      {_k, nil}, acc -> acc
+      {k, v}, acc -> Map.put(acc, k, v)
+    end)
+  end
+
+  defp emit_turn_metrics(result, mode, duration_ms) do
+    Telemetry.claude_turn_completed(%{result: result, mode: mode})
+    Telemetry.claude_turn_duration(duration_ms, %{result: result, mode: mode})
+
+    if result == "usage_limit_reached" do
+      Telemetry.claude_usage_limit_event(%{})
+    end
+  end
+
+  defp emit_turn_completion_log(issue, response, mode, opts) do
+    {trace_id, span_id} = otel_trace_fields()
+    run_id = Keyword.get(opts, :run_id, "")
+    session_id = response[:session_id] || ""
+    result = to_string(response[:result] || "unknown")
+    log_path = response[:claude_log_path] || ""
+
+    Logger.info("Claude CLI turn finished",
+      issue_id: Map.get(issue, :id),
+      issue_identifier: Map.get(issue, :identifier),
+      session_id: session_id,
+      run_id: run_id,
+      trace_id: trace_id,
+      span_id: span_id,
+      event: "claude.turn.finished",
+      metadata: %{
+        turn_result: result,
+        mode: to_string(mode),
+        claude_log_path: log_path
+      }
+    )
+  end
+
+  defp otel_trace_fields do
+    span_ctx = OpenTelemetry.Tracer.current_span_ctx()
+
+    case span_ctx do
+      :undefined ->
+        {"", ""}
+
+      _ ->
+        trace_id = OpenTelemetry.Span.trace_id(span_ctx)
+        span_id = OpenTelemetry.Span.span_id(span_ctx)
+
+        trace_hex =
+          if is_integer(trace_id),
+            do: Integer.to_string(trace_id, 16) |> String.pad_leading(32, "0"),
+            else: ""
+
+        span_hex =
+          if is_integer(span_id),
+            do: Integer.to_string(span_id, 16) |> String.pad_leading(16, "0"),
+            else: ""
+
+        {trace_hex, span_hex}
     end
   end
 end
