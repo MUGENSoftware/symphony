@@ -309,7 +309,7 @@ defmodule SymphonyElixir.Orchestrator do
   @doc false
   @spec sort_issues_for_dispatch_for_test([Issue.t()]) :: [Issue.t()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
-    sort_issues_for_dispatch(issues)
+    sort_issues_for_dispatch(issues, terminal_state_set())
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -465,7 +465,7 @@ defmodule SymphonyElixir.Orchestrator do
     terminal_states = terminal_state_set()
 
     issues
-    |> sort_issues_for_dispatch()
+    |> sort_issues_for_dispatch(terminal_states)
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
         dispatch_issue(state_acc, issue)
@@ -475,13 +475,19 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp sort_issues_for_dispatch(issues) when is_list(issues) do
+  defp sort_issues_for_dispatch(issues, terminal_states)
+       when is_list(issues) and is_struct(terminal_states, MapSet) do
     Enum.sort_by(issues, fn
       %Issue{} = issue ->
-        {priority_rank(issue.priority), issue_created_at_sort_key(issue), issue.identifier || issue.id || ""}
+        {
+          priority_rank(issue.priority),
+          child_issue_dispatch_rank(issue, terminal_states),
+          issue_created_at_sort_key(issue),
+          issue.identifier || issue.id || ""
+        }
 
       _ ->
-        {priority_rank(nil), issue_created_at_sort_key(nil), ""}
+        {priority_rank(nil), 1, issue_created_at_sort_key(nil), ""}
     end)
   end
 
@@ -494,6 +500,17 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp issue_created_at_sort_key(%Issue{}), do: 9_223_372_036_854_775_807
   defp issue_created_at_sort_key(_issue), do: 9_223_372_036_854_775_807
+
+  defp child_issue_dispatch_rank(%Issue{parent: %{} = _parent} = issue, terminal_states) do
+    if todo_issue_blocked_by_non_terminal?(issue, terminal_states) do
+      1
+    else
+      0
+    end
+  end
+
+  defp child_issue_dispatch_rank(%Issue{}, _terminal_states), do: 0
+  defp child_issue_dispatch_rank(_issue, _terminal_states), do: 1
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
@@ -544,7 +561,9 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
     issue_routable_to_worker?(issue) and
       active_issue_state?(state_name, active_states) and
-      !terminal_issue_state?(state_name, terminal_states)
+      !terminal_issue_state?(state_name, terminal_states) and
+      !parent_issue_blocked_by_non_terminal_sub_issues?(issue, terminal_states) and
+      !sub_issue_of_terminal_parent?(issue, terminal_states)
   end
 
   defp candidate_issue?(_issue, _active_states, _terminal_states), do: false
@@ -571,6 +590,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp todo_issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
+
+  defp parent_issue_blocked_by_non_terminal_sub_issues?(
+         %Issue{sub_issues: sub_issues},
+         terminal_states
+       )
+       when is_list(sub_issues) do
+    Enum.any?(sub_issues, fn
+      %{state: sub_issue_state} when is_binary(sub_issue_state) ->
+        !terminal_issue_state?(sub_issue_state, terminal_states)
+
+      %{} ->
+        true
+
+      _ ->
+        true
+    end)
+  end
+
+  defp parent_issue_blocked_by_non_terminal_sub_issues?(_issue, _terminal_states), do: false
+
+  defp sub_issue_of_terminal_parent?(
+         %Issue{parent: %{state: parent_state}},
+         terminal_states
+       )
+       when is_binary(parent_state) do
+    terminal_issue_state?(parent_state, terminal_states)
+  end
+
+  defp sub_issue_of_terminal_parent?(%Issue{parent: %{}}, _terminal_states), do: true
+  defp sub_issue_of_terminal_parent?(_issue, _terminal_states), do: false
 
   defp terminal_issue_state?(state_name, terminal_states) when is_binary(state_name) do
     MapSet.member?(terminal_states, normalize_issue_state(state_name))
