@@ -326,8 +326,28 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "parent" => %{
         "id" => "issue-9",
         "identifier" => "MT-9",
+        "priority" => 2,
+        "createdAt" => "2026-01-01T00:00:00Z",
         "state" => %{"name" => "In Progress"},
-        "labels" => %{"nodes" => [%{"name" => "child-mode:serial"}]}
+        "labels" => %{"nodes" => [%{"name" => "child-mode:serial"}]},
+        "children" => %{
+          "nodes" => [
+            %{
+              "id" => "issue-8",
+              "identifier" => "MT-8",
+              "priority" => 1,
+              "createdAt" => "2026-01-01T00:00:00Z",
+              "state" => %{"name" => "Done"}
+            },
+            %{
+              "id" => "issue-10",
+              "identifier" => "MT-10",
+              "priority" => 2,
+              "createdAt" => "2026-01-02T00:00:00Z",
+              "state" => %{"name" => "Todo"}
+            }
+          ]
+        }
       },
       "children" => %{
         "nodes" => [
@@ -349,6 +369,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert issue.parent == %{id: "issue-9", identifier: "MT-9", state: "In Progress"}
     assert issue.child_execution_mode == :serial
+    assert issue.serial_predecessor == %{id: "issue-8", identifier: "MT-8", state: "Done"}
 
     assert issue.sub_issues == [
              %{id: "issue-11", identifier: "MT-11", state: "Todo"},
@@ -370,6 +391,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     refute issue.assigned_to_worker
+  end
+
+  test "linear client keeps explicit child-mode:parallel parents in parallel mode" do
+    raw_issue = %{
+      "id" => "issue-109",
+      "identifier" => "MT-109",
+      "title" => "Parallel child",
+      "state" => %{"name" => "Todo"},
+      "parent" => %{
+        "id" => "issue-100",
+        "identifier" => "MT-100",
+        "state" => %{"name" => "In Progress"},
+        "labels" => %{"nodes" => [%{"name" => "child-mode:parallel"}]}
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert issue.child_execution_mode == :parallel
+    assert is_nil(issue.serial_predecessor)
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -542,13 +583,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "orchestrator dispatches only one ready child per parent in a poll cycle" do
-    state = %Orchestrator.State{
-      max_concurrent_agents: 3,
-      running: %{},
-      claimed: MapSet.new(),
-      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-      retry_attempts: %{}
-    }
+    state = empty_orchestrator_state()
 
     first_ready_child = %Issue{
       id: "child-first",
@@ -570,6 +605,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       priority: 1,
       child_execution_mode: :serial,
       parent: %{id: "parent-1", identifier: "MT-400", state: "In Progress"},
+      serial_predecessor: %{id: "child-first", identifier: "MT-401", state: "Done"},
       blocked_by: [],
       created_at: ~U[2026-01-02 00:00:00Z]
     }
@@ -588,8 +624,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
              [second_ready_child, different_parent_child, first_ready_child],
-             state
+             state,
+             fn "MT-401" -> :merged end
            ) == ["MT-401", "MT-403"]
+  end
+
+  test "orchestrator stalls later serial siblings behind an earlier blocked sibling" do
+    state = empty_orchestrator_state()
+
+    first_blocked_child = %Issue{
+      id: "child-blocked-first",
+      identifier: "MT-451",
+      title: "Blocked first child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-45", identifier: "MT-450", state: "In Progress"},
+      blocked_by: [%{id: "blocker-1", identifier: "MT-900", state: "In Progress"}],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    second_child = %Issue{
+      id: "child-waiting-second",
+      identifier: "MT-452",
+      title: "Waiting second child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-45", identifier: "MT-450", state: "In Progress"},
+      serial_predecessor: %{id: "child-blocked-first", identifier: "MT-451", state: "Todo"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [second_child, first_blocked_child],
+             state,
+             fn "MT-451" -> :merged end
+           ) == []
   end
 
   test "orchestrator skips siblings when one child of the same parent is already running" do
@@ -628,6 +700,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       priority: 1,
       child_execution_mode: :serial,
       parent: %{id: "parent-5", identifier: "MT-500", state: "In Progress"},
+      serial_predecessor: %{id: "child-running", identifier: "MT-501", state: "Todo"},
       blocked_by: [],
       created_at: ~U[2026-01-01 00:00:00Z]
     }
@@ -646,18 +719,107 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
              [sibling_child, different_parent_child],
-             state
+             state,
+             fn "MT-501" -> :merged end
            ) == ["MT-503"]
   end
 
-  test "orchestrator keeps sibling dispatch parallel by default" do
-    state = %Orchestrator.State{
-      max_concurrent_agents: 3,
-      running: %{},
-      claimed: MapSet.new(),
-      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-      retry_attempts: %{}
+  test "orchestrator dispatches next serial child only after predecessor PR is merged" do
+    state = empty_orchestrator_state()
+
+    next_serial_child = %Issue{
+      id: "child-next-serial",
+      identifier: "MT-551",
+      title: "Next serial child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-55", identifier: "MT-550", state: "In Progress"},
+      serial_predecessor: %{id: "child-prev-serial", identifier: "MT-550A", state: "Done"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
     }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [next_serial_child],
+             state,
+             fn "MT-550A" -> :merged end
+           ) == ["MT-551"]
+  end
+
+  test "orchestrator keeps next serial child blocked until predecessor PR is merged" do
+    state = empty_orchestrator_state()
+
+    next_serial_child = %Issue{
+      id: "child-next-unmerged",
+      identifier: "MT-561",
+      title: "Next serial child waits",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-56", identifier: "MT-560", state: "In Progress"},
+      serial_predecessor: %{id: "child-prev-unmerged", identifier: "MT-560A", state: "Done"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [next_serial_child],
+             state,
+             fn "MT-560A" -> :not_merged end
+           ) == []
+  end
+
+  test "orchestrator treats a merged predecessor PR as sufficient even if the branch is gone" do
+    state = empty_orchestrator_state()
+
+    next_serial_child = %Issue{
+      id: "child-next-branch-gone",
+      identifier: "MT-571",
+      title: "Next serial child after merged predecessor",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-57", identifier: "MT-570", state: "In Progress"},
+      serial_predecessor: %{id: "child-prev-branch-gone", identifier: "MT-570A", state: "Done"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [next_serial_child],
+             state,
+             fn "MT-570A" -> :merged end
+           ) == ["MT-571"]
+  end
+
+  test "orchestrator fails closed when predecessor PR merge status lookup errors" do
+    state = empty_orchestrator_state()
+
+    next_serial_child = %Issue{
+      id: "child-next-error",
+      identifier: "MT-581",
+      title: "Next serial child after merge lookup failure",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-58", identifier: "MT-580", state: "In Progress"},
+      serial_predecessor: %{id: "child-prev-error", identifier: "MT-580A", state: "Done"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    assert capture_log(fn ->
+             assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+                      [next_serial_child],
+                      state,
+                      fn "MT-580A" -> {:error, :gh_unavailable} end
+                    ) == []
+           end) =~ "predecessor PR merge status lookup failed"
+  end
+
+  test "orchestrator keeps sibling dispatch parallel by default" do
+    state = empty_orchestrator_state()
 
     first_parallel_child = %Issue{
       id: "child-parallel-1",
@@ -1193,5 +1355,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt
+  end
+
+  defp empty_orchestrator_state do
+    %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
   end
 end

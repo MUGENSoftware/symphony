@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   require OpenTelemetry.Tracer, as: Tracer
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Git, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -296,7 +296,21 @@ defmodule SymphonyElixir.Orchestrator do
   @doc false
   @spec should_dispatch_issue_for_test(Issue.t(), term()) :: boolean()
   def should_dispatch_issue_for_test(%Issue{} = issue, %State{} = state) do
-    should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set())
+    should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set(), pr_merge_status_checker())
+  end
+
+  @doc false
+  @spec should_dispatch_issue_for_test(Issue.t(), term(), (String.t() -> Git.pr_merge_status())) ::
+          boolean()
+  def should_dispatch_issue_for_test(%Issue{} = issue, %State{} = state, pr_merge_status_checker)
+      when is_function(pr_merge_status_checker, 1) do
+    should_dispatch_issue?(
+      issue,
+      state,
+      active_state_set(),
+      terminal_state_set(),
+      pr_merge_status_checker
+    )
   end
 
   @doc false
@@ -320,7 +334,29 @@ defmodule SymphonyElixir.Orchestrator do
       issues,
       state,
       active_state_set(),
-      terminal_state_set()
+      terminal_state_set(),
+      pr_merge_status_checker()
+    )
+  end
+
+  @doc false
+  @spec choose_issue_identifiers_for_dispatch_for_test(
+          [Issue.t()],
+          term(),
+          (String.t() -> Git.pr_merge_status())
+        ) :: [String.t()]
+  def choose_issue_identifiers_for_dispatch_for_test(
+        issues,
+        %State{} = state,
+        pr_merge_status_checker
+      )
+      when is_list(issues) and is_function(pr_merge_status_checker, 1) do
+    choose_issue_identifiers_for_dispatch(
+      issues,
+      state,
+      active_state_set(),
+      terminal_state_set(),
+      pr_merge_status_checker
     )
   end
 
@@ -476,11 +512,18 @@ defmodule SymphonyElixir.Orchestrator do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
     busy_parent_keys = busy_parent_keys(issues, state)
+    pr_merge_status_checker = pr_merge_status_checker()
 
     issues
     |> sort_issues_for_dispatch(terminal_states)
     |> Enum.reduce({state, busy_parent_keys}, fn issue, {state_acc, busy_parent_keys_acc} ->
-      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) and
+      if should_dispatch_issue?(
+           issue,
+           state_acc,
+           active_states,
+           terminal_states,
+           pr_merge_status_checker
+         ) and
            !parent_busy?(issue, busy_parent_keys_acc) do
         updated_state = dispatch_issue(state_acc, issue)
         {updated_state, mark_parent_busy(issue, busy_parent_keys_acc)}
@@ -491,14 +534,26 @@ defmodule SymphonyElixir.Orchestrator do
     |> elem(0)
   end
 
-  defp choose_issue_identifiers_for_dispatch(issues, state, active_states, terminal_states)
+  defp choose_issue_identifiers_for_dispatch(
+         issues,
+         state,
+         active_states,
+         terminal_states,
+         pr_merge_status_checker
+       )
        when is_list(issues) and is_struct(state, State) do
     busy_parent_keys = busy_parent_keys(issues, state)
 
     issues
     |> sort_issues_for_dispatch(terminal_states)
     |> Enum.reduce({[], busy_parent_keys}, fn issue, {identifiers, busy_parent_keys_acc} ->
-      if should_dispatch_issue?(issue, state, active_states, terminal_states) and
+      if should_dispatch_issue?(
+           issue,
+           state,
+           active_states,
+           terminal_states,
+           pr_merge_status_checker
+         ) and
            !parent_busy?(issue, busy_parent_keys_acc) do
         {
           identifiers ++ [issue.identifier],
@@ -537,12 +592,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_created_at_sort_key(%Issue{}), do: 9_223_372_036_854_775_807
   defp issue_created_at_sort_key(_issue), do: 9_223_372_036_854_775_807
 
+  defp child_issue_dispatch_rank(
+         %Issue{parent: %{} = _parent, child_execution_mode: :serial},
+         _terminal_states
+       ),
+       do: 0
+
   defp child_issue_dispatch_rank(%Issue{parent: %{} = _parent} = issue, terminal_states) do
-    if todo_issue_blocked_by_non_terminal?(issue, terminal_states) do
-      1
-    else
-      0
-    end
+    if todo_issue_blocked_by_non_terminal?(issue, terminal_states), do: 1, else: 0
   end
 
   defp child_issue_dispatch_rank(%Issue{}, _terminal_states), do: 0
@@ -605,17 +662,20 @@ defmodule SymphonyElixir.Orchestrator do
          %Issue{} = issue,
          %State{running: running, claimed: claimed} = state,
          active_states,
-         terminal_states
+         terminal_states,
+         pr_merge_status_checker
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      serial_predecessor_dispatchable?(issue, active_states, pr_merge_status_checker) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running)
   end
 
-  defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+  defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states, _pr_merge_status_checker),
+    do: false
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -720,8 +780,52 @@ defmodule SymphonyElixir.Orchestrator do
     MapSet.member?(active_states, normalize_issue_state(state_name))
   end
 
+  defp serial_predecessor_dispatchable?(
+         %Issue{child_execution_mode: :serial, serial_predecessor: predecessor},
+         active_states,
+         pr_merge_status_checker
+       )
+       when is_map(predecessor) and is_struct(active_states, MapSet) and
+              is_function(pr_merge_status_checker, 1) do
+    predecessor_identifier = predecessor[:identifier]
+    predecessor_state = predecessor[:state]
+
+    cond do
+      !is_binary(predecessor_identifier) or !is_binary(predecessor_state) ->
+        false
+
+      active_issue_state?(predecessor_state, active_states) ->
+        false
+
+      true ->
+        case pr_merge_status_checker.(predecessor_identifier) do
+          :merged ->
+            true
+
+          :not_merged ->
+            false
+
+          {:error, reason} ->
+            Logger.warning("Skipping serial child dispatch; predecessor PR merge status lookup failed issue_identifier=#{predecessor_identifier} reason=#{inspect(reason)}")
+
+            false
+        end
+    end
+  end
+
+  defp serial_predecessor_dispatchable?(%Issue{}, _active_states, _pr_merge_status_checker), do: true
+  defp serial_predecessor_dispatchable?(_issue, _active_states, _pr_merge_status_checker), do: false
+
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))
+  end
+
+  defp pr_merge_status_checker do
+    Application.get_env(
+      :symphony_elixir,
+      :git_pr_merge_status_checker,
+      &Git.pull_request_merge_status/1
+    )
   end
 
   defp terminal_state_set do

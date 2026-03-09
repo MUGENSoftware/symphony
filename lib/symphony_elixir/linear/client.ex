@@ -30,12 +30,25 @@ defmodule SymphonyElixir.Linear.Client do
         parent {
           id
           identifier
+          priority
+          createdAt
           state {
             name
           }
           labels {
             nodes {
               name
+            }
+          }
+          children(first: $relationFirst) {
+            nodes {
+              id
+              identifier
+              priority
+              createdAt
+              state {
+                name
+              }
             }
           }
         }
@@ -96,12 +109,25 @@ defmodule SymphonyElixir.Linear.Client do
         parent {
           id
           identifier
+          priority
+          createdAt
           state {
             name
           }
           labels {
             nodes {
               name
+            }
+          }
+          children(first: $relationFirst) {
+            nodes {
+              id
+              identifier
+              priority
+              createdAt
+              state {
+                name
+              }
             }
           }
         }
@@ -546,6 +572,7 @@ defmodule SymphonyElixir.Linear.Client do
       assignee_id: assignee_field(assignee, "id"),
       parent: extract_parent(issue),
       child_execution_mode: extract_child_execution_mode(issue),
+      serial_predecessor: extract_serial_predecessor(issue),
       blocked_by: extract_blockers(issue),
       sub_issues: extract_sub_issues(issue),
       labels: extract_labels(issue),
@@ -735,6 +762,37 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_child_execution_mode(_), do: :parallel
 
+  defp extract_serial_predecessor(issue) when is_map(issue) do
+    case {extract_child_execution_mode(issue), get_in(issue, ["parent", "children", "nodes"])} do
+      {:serial, child_issues} when is_list(child_issues) ->
+        issue_id = issue["id"]
+        issue_identifier = issue["identifier"]
+
+        child_issues
+        |> Enum.sort_by(&serial_child_sort_key/1)
+        |> Enum.find_index(fn
+          %{"id" => ^issue_id} when is_binary(issue_id) -> true
+          %{"identifier" => ^issue_identifier} when is_binary(issue_identifier) -> true
+          _ -> false
+        end)
+        |> case do
+          index when is_integer(index) and index > 0 ->
+            child_issues
+            |> Enum.sort_by(&serial_child_sort_key/1)
+            |> Enum.at(index - 1)
+            |> relation_ref_from_issue()
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp extract_serial_predecessor(_), do: nil
+
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})
        when is_list(inverse_relations) do
     inverse_relations
@@ -760,6 +818,25 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_sub_issues(_), do: []
 
+  defp serial_child_sort_key(issue) when is_map(issue) do
+    {
+      priority_rank(issue["priority"]),
+      child_created_at_sort_key(issue["createdAt"]),
+      issue["identifier"] || issue["id"] || ""
+    }
+  end
+
+  defp serial_child_sort_key(_issue) do
+    {priority_rank(nil), child_created_at_sort_key(nil), ""}
+  end
+
+  defp child_created_at_sort_key(raw_created_at) do
+    case parse_datetime(raw_created_at) do
+      %DateTime{} = created_at -> DateTime.to_unix(created_at, :microsecond)
+      _ -> 9_223_372_036_854_775_807
+    end
+  end
+
   defp relation_ref_from_issue(issue) when is_map(issue) do
     %{
       id: issue["id"],
@@ -779,4 +856,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp parse_priority(priority) when is_integer(priority), do: priority
   defp parse_priority(_priority), do: nil
+
+  defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority
+  defp priority_rank(_priority), do: 5
 end

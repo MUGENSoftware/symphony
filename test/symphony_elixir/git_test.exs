@@ -43,6 +43,52 @@ defmodule SymphonyElixir.GitTest do
     assert Config.git_auto_pr?() == false
   end
 
+  test "pull_request_merge_status reports merged when GitHub returns a merged PR" do
+    previous_runner = Application.get_env(:symphony_elixir, :git_command_runner)
+
+    Application.put_env(:symphony_elixir, :git_command_runner, fn
+      "gh", ["pr", "list", "--head", "claude/prj-merged", "--state", "merged", "--json", "number,mergedAt,url"], _cwd ->
+        {"[{\"number\":42,\"mergedAt\":\"2026-03-09T10:00:00Z\",\"url\":\"https://example.test/pr/42\"}]", 0}
+    end)
+
+    on_exit(fn -> restore_application_env(:git_command_runner, previous_runner) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), git_branch_prefix: "claude/")
+
+    assert Git.pull_request_merge_status("PRJ-MERGED") == :merged
+  end
+
+  test "pull_request_merge_status reports not_merged when GitHub finds no merged PR" do
+    previous_runner = Application.get_env(:symphony_elixir, :git_command_runner)
+
+    Application.put_env(:symphony_elixir, :git_command_runner, fn
+      "gh", ["pr", "list", "--head", "claude/prj-open", "--state", "merged", "--json", "number,mergedAt,url"], _cwd ->
+        {"[]", 0}
+    end)
+
+    on_exit(fn -> restore_application_env(:git_command_runner, previous_runner) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), git_branch_prefix: "claude/")
+
+    assert Git.pull_request_merge_status("PRJ-OPEN") == :not_merged
+  end
+
+  test "pull_request_merge_status surfaces GitHub command failures" do
+    previous_runner = Application.get_env(:symphony_elixir, :git_command_runner)
+
+    Application.put_env(:symphony_elixir, :git_command_runner, fn
+      "gh", ["pr", "list", "--head", "claude/prj-failed", "--state", "merged", "--json", "number,mergedAt,url"], _cwd ->
+        {"gh unavailable", 1}
+    end)
+
+    on_exit(fn -> restore_application_env(:git_command_runner, previous_runner) end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), git_branch_prefix: "claude/")
+
+    assert Git.pull_request_merge_status("PRJ-FAILED") ==
+             {:error, {:gh_pr_list_failed, 1, "gh unavailable"}}
+  end
+
   test "setup_branch creates feature branch and returns structured result" do
     test_root =
       Path.join(
@@ -232,4 +278,7 @@ defmodule SymphonyElixir.GitTest do
     prompt = PromptBuilder.build_prompt(issue)
     refute prompt =~ "Git Operations — Handled by Infrastructure"
   end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_application_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

@@ -32,6 +32,8 @@ defmodule SymphonyElixir.Git do
           merge: :clean | {:conflicts, String.t()}
         }
 
+  @type pr_merge_status :: :merged | :not_merged | {:error, term()}
+
   @spec setup_branch(Path.t(), String.t()) :: {:ok, setup_result()} | {:error, term()}
   def setup_branch(workspace, issue_identifier) do
     unless Config.git_enabled?() do
@@ -92,6 +94,33 @@ defmodule SymphonyElixir.Git do
     safe_id = issue_identifier |> String.replace(~r/[^a-zA-Z0-9._-]/, "-") |> String.downcase()
     prefix <> safe_id
   end
+
+  @doc """
+  Returns whether GitHub reports a merged PR for the issue branch.
+  """
+  @spec pull_request_merge_status(String.t()) :: pr_merge_status()
+  def pull_request_merge_status(issue_identifier) when is_binary(issue_identifier) do
+    branch_name = branch_name_for_issue(issue_identifier)
+
+    case run_cmd(File.cwd!(), "gh", [
+           "pr",
+           "list",
+           "--head",
+           branch_name,
+           "--state",
+           "merged",
+           "--json",
+           "number,mergedAt,url"
+         ]) do
+      {output, 0} ->
+        decode_pr_merge_status(output)
+
+      {output, status} ->
+        {:error, {:gh_pr_list_failed, status, output}}
+    end
+  end
+
+  def pull_request_merge_status(_issue_identifier), do: {:error, :invalid_issue_identifier}
 
   # -- Private: branch setup --
 
@@ -262,9 +291,11 @@ defmodule SymphonyElixir.Git do
   end
 
   defp run_cmd(workspace, cmd, args) do
+    runner = command_runner()
+
     task =
       Task.async(fn ->
-        System.cmd(cmd, args, cd: workspace, stderr_to_stdout: true)
+        runner.(cmd, args, workspace)
       end)
 
     case Task.yield(task, @cmd_timeout_ms) do
@@ -276,6 +307,40 @@ defmodule SymphonyElixir.Git do
         {"command timed out after #{@cmd_timeout_ms}ms", 1}
     end
   end
+
+  defp command_runner do
+    Application.get_env(:symphony_elixir, :git_command_runner, &default_command_runner/3)
+  end
+
+  defp default_command_runner(cmd, args, cwd) do
+    case System.find_executable(cmd) do
+      nil ->
+        {"command not found: #{cmd}", 127}
+
+      path ->
+        System.cmd(path, args, cd: cwd, stderr_to_stdout: true)
+    end
+  end
+
+  defp decode_pr_merge_status(output) do
+    case Jason.decode(output) do
+      {:ok, prs} when is_list(prs) ->
+        if Enum.any?(prs, &merged_pr?/1) do
+          :merged
+        else
+          :not_merged
+        end
+
+      {:ok, _unexpected} ->
+        {:error, :invalid_gh_pr_list_payload}
+
+      {:error, reason} ->
+        {:error, {:invalid_gh_pr_list_json, reason}}
+    end
+  end
+
+  defp merged_pr?(%{"mergedAt" => merged_at}) when is_binary(merged_at), do: String.trim(merged_at) != ""
+  defp merged_pr?(_pr), do: false
 
   defp truncate(output, max_bytes \\ 1_024) do
     binary_output = IO.iodata_to_binary(output)
