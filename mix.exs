@@ -28,7 +28,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Web.Assets,
           SymphonyElixir.Web.Layouts,
           SymphonyElixir.Web.Endpoint,
-          SymphonyElixir.Web.ErrorJSON
+          SymphonyElixir.Web.ErrorJSON,
+          SymphonyElixir.PrometheusEndpoint
         ]
       ],
       test_ignore_filters: [

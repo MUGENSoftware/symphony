@@ -81,9 +81,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
-    poll_start_ms = System.monotonic_time(:millisecond)
     state = refresh_runtime_config(state)
-    cooldown_active = if claude_unavailable?(state), do: 1, else: 0
+    poll_start_ms = System.monotonic_time(:millisecond)
 
     state =
       Tracer.with_span :"orchestrator.poll_cycle", %{
@@ -96,9 +95,8 @@ defmodule SymphonyElixir.Orchestrator do
         dispatched_state
       end
 
-    duration_ms = System.monotonic_time(:millisecond) - poll_start_ms
-    Telemetry.poll_cycle_completed(duration_ms)
-    Telemetry.report_claude_cooldown(cooldown_active)
+    Telemetry.poll_cycle_completed()
+    Telemetry.poll_cycle_duration(System.monotonic_time(:millisecond) - poll_start_ms)
 
     now_ms = System.monotonic_time(:millisecond)
     next_poll_due_at_ms = now_ms + state.poll_interval_ms
@@ -944,6 +942,7 @@ defmodule SymphonyElixir.Orchestrator do
                 claude_last_reported_output_tokens: 0,
                 claude_last_reported_total_tokens: 0,
                 turn_count: 0,
+                max_turns: Config.agent_max_turns(),
                 retry_attempt: normalize_retry_attempt(attempt),
                 started_at: DateTime.utc_now()
               })
@@ -968,7 +967,7 @@ defmodule SymphonyElixir.Orchestrator do
         end
       end
 
-    emit_orchestrator_gauges(state)
+    emit_gauges(state)
     state
   end
 
@@ -1002,7 +1001,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
-    Telemetry.issue_retried(%{})
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
@@ -1028,6 +1026,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
 
     timer_ref = Process.send_after(self(), {:retry_issue, issue_id}, delay_ms)
+    Telemetry.issue_retried()
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
@@ -1681,6 +1680,12 @@ defmodule SymphonyElixir.Orchestrator do
     |> Map.put(:claude_availability, nil)
   end
 
+  defp emit_gauges(%State{} = state) do
+    Telemetry.report_running_agents(map_size(state.running))
+    Telemetry.report_retry_queue_depth(map_size(state.retry_attempts))
+    Telemetry.report_claude_cooldown_active(if claude_unavailable?(state), do: 1, else: 0)
+  end
+
   defp claude_unavailable?(%State{} = state) do
     case Map.get(state, :claude_availability) do
       %{blocked_until_ms: blocked_until_ms} when is_integer(blocked_until_ms) ->
@@ -2109,8 +2114,5 @@ defmodule SymphonyElixir.Orchestrator do
     if claude_unavailable?(state), do: "cooldown", else: "available"
   end
 
-  defp emit_orchestrator_gauges(%State{} = state) do
-    Telemetry.report_running_agents(map_size(state.running))
-    Telemetry.report_retry_queue_depth(map_size(state.retry_attempts))
-  end
+  defp emit_orchestrator_gauges(%State{} = state), do: emit_gauges(state)
 end
