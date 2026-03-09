@@ -65,6 +65,12 @@ defmodule SymphonyElixir.MixProject do
       {:solid, "~> 1.2"},
       {:nimble_options, "~> 1.1"},
       {:logger_json, "~> 7.0"},
+      {:opentelemetry, "~> 1.3"},
+      {:opentelemetry_api, "~> 1.2"},
+      {:opentelemetry_exporter, "~> 1.6"},
+      {:opentelemetry_process_propagator, "~> 0.2"},
+      {:telemetry_metrics, "~> 1.0"},
+      {:telemetry_metrics_prometheus_core, "~> 1.2"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]
