@@ -1744,16 +1744,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         " after\nline"
 
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-898",
-        state: "running",
-        session_id: "thread-1234567890",
-        claude_cli_pid: "4242",
-        claude_total_tokens: 12,
-        runtime_seconds: 15,
-        last_claude_event: :notification,
-        last_claude_message: payload
-      })
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-898",
+          state: "running",
+          session_id: "thread-1234567890",
+          claude_cli_pid: "4242",
+          claude_total_tokens: 12,
+          runtime_seconds: 15,
+          last_claude_event: :notification,
+          last_claude_message: payload
+        },
+        140
+      )
 
     plain = Regex.replace(~r/\e\[[0-9;]*m/, row, "")
 
