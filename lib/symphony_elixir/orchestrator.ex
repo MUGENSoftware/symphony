@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   require OpenTelemetry.Tracer, as: Tracer
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, Git, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Telemetry, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -81,8 +81,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
+    poll_start_ms = System.monotonic_time(:millisecond)
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
+    cooldown_active = if claude_unavailable?(state), do: 1, else: 0
+
+    state =
+      Tracer.with_span :"orchestrator.poll_cycle", %{
+        attributes: %{
+          claude_availability_status: cooldown_status_string(state)
+        }
+      } do
+        dispatched_state = maybe_dispatch(state)
+        emit_orchestrator_gauges(dispatched_state)
+        dispatched_state
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - poll_start_ms
+    Telemetry.poll_cycle_completed(duration_ms)
+    Telemetry.report_claude_cooldown(cooldown_active)
+
     now_ms = System.monotonic_time(:millisecond)
     next_poll_due_at_ms = now_ms + state.poll_interval_ms
     :ok = schedule_tick(state.poll_interval_ms)
@@ -106,6 +123,10 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
 
+        Tracer.set_attribute(:issue_id, issue_id)
+        Tracer.set_attribute(:issue_identifier, running_entry.identifier || "")
+        Tracer.set_attribute(:worker_exit_reason, to_string(reason))
+
         state =
           case reason do
             :normal ->
@@ -126,6 +147,7 @@ defmodule SymphonyElixir.Orchestrator do
               })
           end
 
+        emit_orchestrator_gauges(state)
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
         notify_dashboard()
@@ -198,6 +220,7 @@ defmodule SymphonyElixir.Orchestrator do
       choose_issues(issues, state)
     else
       true ->
+        Tracer.set_attribute(:claude_availability_status, "cooldown")
         state
 
       {:error, :missing_linear_api_token} ->
@@ -300,7 +323,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec should_dispatch_issue_for_test(Issue.t(), term(), (String.t() -> Git.pr_merge_status())) ::
+  @spec should_dispatch_issue_for_test(
+          Issue.t(),
+          term(),
+          (String.t() -> SymphonyElixir.Git.pr_merge_status())
+        ) ::
           boolean()
   def should_dispatch_issue_for_test(%Issue{} = issue, %State{} = state, pr_merge_status_checker)
       when is_function(pr_merge_status_checker, 1) do
@@ -343,7 +370,7 @@ defmodule SymphonyElixir.Orchestrator do
   @spec choose_issue_identifiers_for_dispatch_for_test(
           [Issue.t()],
           term(),
-          (String.t() -> Git.pr_merge_status())
+          (String.t() -> SymphonyElixir.Git.pr_merge_status())
         ) :: [String.t()]
   def choose_issue_identifiers_for_dispatch_for_test(
         issues,
@@ -824,7 +851,7 @@ defmodule SymphonyElixir.Orchestrator do
     Application.get_env(
       :symphony_elixir,
       :git_pr_merge_status_checker,
-      &Git.pull_request_merge_status/1
+      &SymphonyElixir.Git.pull_request_merge_status/1
     )
   end
 
@@ -866,65 +893,83 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, metadata) do
+    dispatch_reason = Map.get(metadata, :dispatch_reason, "poll_cycle")
     recipient = self()
     resume_session_id = Map.get(metadata, :resume_session_id)
-    otel_ctx = OpenTelemetry.Ctx.get_current()
 
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient,
-             attempt: attempt,
-             resume_session_id: resume_session_id,
-             otel_ctx: otel_ctx
-           )
-         end) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
-
-        Logger.info(
-          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}" <>
-            if(is_binary(resume_session_id), do: " resume_session_id=#{resume_session_id}", else: "")
-        )
-
-        running =
-          Map.put(state.running, issue.id, %{
-            pid: pid,
-            ref: ref,
-            identifier: issue.identifier,
-            issue: issue,
-            session_id: resume_session_id,
-            last_claude_message: nil,
-            last_claude_timestamp: nil,
-            last_claude_event: nil,
-            claude_cli_pid: nil,
-            claude_input_tokens: 0,
-            claude_output_tokens: 0,
-            claude_total_tokens: 0,
-            claude_last_reported_input_tokens: 0,
-            claude_last_reported_output_tokens: 0,
-            claude_last_reported_total_tokens: 0,
-            turn_count: 0,
-            max_turns: Config.agent_max_turns(),
-            retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
-          })
-
-        %{
-          state
-          | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
+    state =
+      Tracer.with_span :"orchestrator.dispatch_issue", %{
+        attributes: %{
+          issue_id: issue.id,
+          issue_identifier: issue.identifier || "",
+          retry_attempt: normalize_retry_attempt(attempt),
+          dispatch_reason: dispatch_reason,
+          claude_availability_status: cooldown_status_string(state)
         }
+      } do
+        otel_ctx = OpenTelemetry.Ctx.get_current()
 
-      {:error, reason} ->
-        Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
-        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+        case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+               AgentRunner.run(issue, recipient,
+                 attempt: attempt,
+                 resume_session_id: resume_session_id,
+                 otel_ctx: otel_ctx
+               )
+             end) do
+          {:ok, pid} ->
+            ref = Process.monitor(pid)
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          error: "failed to spawn agent: #{inspect(reason)}",
-          resume_session_id: resume_session_id
-        })
-    end
+            Logger.info(
+              "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}" <>
+                if(is_binary(resume_session_id), do: " resume_session_id=#{resume_session_id}", else: "")
+            )
+
+            Telemetry.issue_dispatched(%{dispatch_reason: dispatch_reason})
+
+            running =
+              Map.put(state.running, issue.id, %{
+                pid: pid,
+                ref: ref,
+                identifier: issue.identifier,
+                issue: issue,
+                session_id: resume_session_id,
+                last_claude_message: nil,
+                last_claude_timestamp: nil,
+                last_claude_event: nil,
+                claude_cli_pid: nil,
+                claude_input_tokens: 0,
+                claude_output_tokens: 0,
+                claude_total_tokens: 0,
+                claude_last_reported_input_tokens: 0,
+                claude_last_reported_output_tokens: 0,
+                claude_last_reported_total_tokens: 0,
+                turn_count: 0,
+                retry_attempt: normalize_retry_attempt(attempt),
+                started_at: DateTime.utc_now()
+              })
+
+            %{
+              state
+              | running: running,
+                claimed: MapSet.put(state.claimed, issue.id),
+                retry_attempts: Map.delete(state.retry_attempts, issue.id)
+            }
+
+          {:error, reason} ->
+            Tracer.set_status(:error, inspect(reason))
+            Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+            next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+
+            schedule_issue_retry(state, issue.id, next_attempt, %{
+              identifier: issue.identifier,
+              error: "failed to spawn agent: #{inspect(reason)}",
+              resume_session_id: resume_session_id
+            })
+        end
+      end
+
+    emit_orchestrator_gauges(state)
+    state
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -957,6 +1002,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
+    Telemetry.issue_retried(%{})
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
@@ -1109,7 +1155,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       retry_candidate_issue?(issue, terminal_state_set()) and
           dispatch_slots_available?(issue, state) ->
-        {:noreply, dispatch_issue(state, issue, attempt, metadata)}
+        {:noreply, dispatch_issue(state, issue, attempt, Map.put(metadata, :dispatch_reason, "retry"))}
 
       true ->
         Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
@@ -2058,4 +2104,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  defp cooldown_status_string(%State{} = state) do
+    if claude_unavailable?(state), do: "cooldown", else: "available"
+  end
+
+  defp emit_orchestrator_gauges(%State{} = state) do
+    Telemetry.report_running_agents(map_size(state.running))
+    Telemetry.report_retry_queue_depth(map_size(state.retry_attempts))
+  end
 end
