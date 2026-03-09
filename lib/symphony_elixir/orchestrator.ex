@@ -638,22 +638,21 @@ defmodule SymphonyElixir.Orchestrator do
       %{issue: %Issue{} = issue}, acc -> mark_parent_busy(issue, acc)
       _entry, acc -> acc
     end)
-    |> then(fn acc ->
-      Enum.reduce(issues, acc, fn
-        %Issue{id: issue_id} = issue, acc when is_binary(issue_id) ->
-          if MapSet.member?(claimed, issue_id) do
-            mark_parent_busy(issue, acc)
-          else
-            acc
-          end
-
-        _issue, acc ->
-          acc
-      end)
-    end)
+    |> add_claimed_parent_keys(issues, claimed)
   end
 
   defp busy_parent_keys(_issues, _state), do: MapSet.new()
+
+  defp add_claimed_parent_keys(parent_keys, issues, claimed)
+       when is_struct(parent_keys, MapSet) and is_list(issues) and is_struct(claimed, MapSet) do
+    Enum.reduce(issues, parent_keys, fn
+      %Issue{id: issue_id} = issue, acc when is_binary(issue_id) ->
+        if MapSet.member?(claimed, issue_id), do: mark_parent_busy(issue, acc), else: acc
+
+      _issue, acc ->
+        acc
+    end)
+  end
 
   defp parent_busy?(%Issue{} = issue, busy_parent_keys) when is_struct(busy_parent_keys, MapSet) do
     case serial_parent_dispatch_key(issue) do
@@ -823,23 +822,24 @@ defmodule SymphonyElixir.Orchestrator do
         false
 
       true ->
-        case pr_merge_status_checker.(predecessor_identifier) do
-          :merged ->
-            true
-
-          :not_merged ->
-            false
-
-          {:error, reason} ->
-            Logger.warning("Skipping serial child dispatch; predecessor PR merge status lookup failed issue_identifier=#{predecessor_identifier} reason=#{inspect(reason)}")
-
-            false
-        end
+        predecessor_merge_allows_dispatch?(
+          predecessor_identifier,
+          pr_merge_status_checker.(predecessor_identifier)
+        )
     end
   end
 
   defp serial_predecessor_dispatchable?(%Issue{}, _active_states, _pr_merge_status_checker), do: true
   defp serial_predecessor_dispatchable?(_issue, _active_states, _pr_merge_status_checker), do: false
+
+  defp predecessor_merge_allows_dispatch?(_predecessor_identifier, :merged), do: true
+  defp predecessor_merge_allows_dispatch?(_predecessor_identifier, :not_merged), do: false
+
+  defp predecessor_merge_allows_dispatch?(predecessor_identifier, {:error, reason}) do
+    Logger.warning("Skipping serial child dispatch; predecessor PR merge status lookup failed issue_identifier=#{predecessor_identifier} reason=#{inspect(reason)}")
+
+    false
+  end
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))

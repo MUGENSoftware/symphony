@@ -750,10 +750,7 @@ defmodule SymphonyElixir.Linear.Client do
   defp extract_child_execution_mode(%{"parent" => parent_issue}) when is_map(parent_issue) do
     case extract_labels(parent_issue) do
       labels when is_list(labels) ->
-        cond do
-          "child-mode:serial" in labels -> :serial
-          true -> :parallel
-        end
+        if "child-mode:serial" in labels, do: :serial, else: :parallel
 
       _ ->
         :parallel
