@@ -164,6 +164,16 @@ Fields:
     - `id` (string or null)
     - `identifier` (string or null)
     - `state` (string or null)
+- `parent` (parent issue ref or null)
+  - Parent issue ref contains:
+    - `id` (string or null)
+    - `identifier` (string or null)
+    - `state` (string or null)
+- `sub_issues` (list of sub-issue refs)
+  - Each sub-issue ref contains:
+    - `id` (string or null)
+    - `identifier` (string or null)
+    - `state` (string or null)
 - `created_at` (timestamp or null)
 - `updated_at` (timestamp or null)
 
@@ -729,12 +739,16 @@ An issue is dispatch-eligible only if all are true:
 - Per-state concurrency slots are available.
 - Blocker rule for `Todo` state passes:
   - If the issue state is `Todo`, do not dispatch when any blocker is non-terminal.
+- Hierarchy rules pass:
+  - Do not dispatch a parent issue while any sub-issue is non-terminal.
+  - Do not dispatch a sub-issue whose parent is already terminal.
 
 Sorting order (stable intent):
 
 1. `priority` ascending (1..4 are preferred; null/unknown sorts last)
-2. `created_at` oldest first
-3. `identifier` lexicographic tie-breaker
+2. for sub-issues with the same priority, items without non-terminal blockers sort ahead of blocked items
+3. `created_at` oldest first
+4. `identifier` lexicographic tie-breaker
 
 ### 8.3 Concurrency Control
 
@@ -1161,6 +1175,8 @@ Additional normalization details:
 
 - `labels` -> lowercase strings
 - `blocked_by` -> derived from inverse relations where relation type is `blocks`
+- `parent` -> derived from tracker hierarchy metadata when available
+- `sub_issues` -> derived from tracker hierarchy metadata when available
 - `priority` -> integer only (non-integers become null)
 - `created_at` and `updated_at` -> parse ISO-8601 timestamps
 
@@ -1953,8 +1969,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
 - Dispatch sort order is priority then oldest creation time
+- Child-issue dispatch sort prefers ready siblings before blocked siblings at the same priority
 - `Todo` issue with non-terminal blockers is not eligible
 - `Todo` issue with terminal blockers is eligible
+- Parent issue with non-terminal sub-issues is not eligible
+- Sub-issue with terminal parent is not eligible
 - Active-state issue refresh updates running entry state
 - Non-active state stops running agent without workspace cleanup
 - Terminal state stops running agent and cleans workspace

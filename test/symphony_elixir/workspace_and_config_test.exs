@@ -317,6 +317,43 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.assigned_to_worker
   end
 
+  test "linear client normalizes parent and sub-issue relations" do
+    raw_issue = %{
+      "id" => "issue-10",
+      "identifier" => "MT-10",
+      "title" => "Parent-aware work",
+      "state" => %{"name" => "Todo"},
+      "parent" => %{
+        "id" => "issue-9",
+        "identifier" => "MT-9",
+        "state" => %{"name" => "In Progress"}
+      },
+      "children" => %{
+        "nodes" => [
+          %{
+            "id" => "issue-11",
+            "identifier" => "MT-11",
+            "state" => %{"name" => "Todo"}
+          },
+          %{
+            "id" => "issue-12",
+            "identifier" => "MT-12",
+            "state" => %{"name" => "Done"}
+          }
+        ]
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert issue.parent == %{id: "issue-9", identifier: "MT-9", state: "In Progress"}
+
+    assert issue.sub_issues == [
+             %{id: "issue-11", identifier: "MT-11", state: "Todo"},
+             %{id: "issue-12", identifier: "MT-12", state: "Done"}
+           ]
+  end
+
   test "linear client marks explicitly unassigned issues as not routed to worker" do
     raw_issue = %{
       "id" => "issue-99",
@@ -415,6 +452,93 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(sorted, & &1.identifier) == ["MT-200", "MT-201", "MT-199"]
   end
 
+  test "orchestrator sorts sibling child issues by priority, readiness, age, then identifier" do
+    blocked_child = %Issue{
+      id: "child-blocked",
+      identifier: "MT-302",
+      title: "Blocked child",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-1", identifier: "MT-300", state: "In Progress"},
+      blocked_by: [%{id: "blocker-1", identifier: "MT-900", state: "In Progress"}],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    newer_ready_child = %Issue{
+      id: "child-newer",
+      identifier: "MT-304",
+      title: "Newer ready child",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-1", identifier: "MT-300", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-03 00:00:00Z]
+    }
+
+    older_ready_child = %Issue{
+      id: "child-older",
+      identifier: "MT-303",
+      title: "Older ready child",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-1", identifier: "MT-300", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    same_age_ready_child_earlier_identifier = %Issue{
+      id: "child-tie-a",
+      identifier: "MT-305",
+      title: "Tie breaker A",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-1", identifier: "MT-300", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-04 00:00:00Z]
+    }
+
+    same_age_ready_child_later_identifier = %Issue{
+      id: "child-tie-b",
+      identifier: "MT-306",
+      title: "Tie breaker B",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-1", identifier: "MT-300", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-04 00:00:00Z]
+    }
+
+    lower_priority_ready_child = %Issue{
+      id: "child-low",
+      identifier: "MT-307",
+      title: "Lower priority child",
+      state: "Todo",
+      priority: 2,
+      parent: %{id: "parent-1", identifier: "MT-300", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    sorted =
+      Orchestrator.sort_issues_for_dispatch_for_test([
+        lower_priority_ready_child,
+        same_age_ready_child_later_identifier,
+        blocked_child,
+        same_age_ready_child_earlier_identifier,
+        newer_ready_child,
+        older_ready_child
+      ])
+
+    assert Enum.map(sorted, & &1.identifier) == [
+             "MT-303",
+             "MT-304",
+             "MT-305",
+             "MT-306",
+             "MT-302",
+             "MT-307"
+           ]
+  end
+
   test "todo issue with non-terminal blocker is not dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
@@ -475,6 +599,46 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
 
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "parent issue with non-terminal sub-issues is not dispatch-eligible" do
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "parent-1",
+      identifier: "MT-1100",
+      title: "Parent work",
+      state: "Todo",
+      sub_issues: [%{id: "child-1", identifier: "MT-1101", state: "In Progress"}]
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "sub-issue under terminal parent is not dispatch-eligible" do
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "child-2",
+      identifier: "MT-1102",
+      title: "Child work",
+      state: "Todo",
+      parent: %{id: "parent-2", identifier: "MT-1099", state: "Done"}
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
   test "dispatch revalidation skips stale todo issue once a non-terminal blocker appears" do
