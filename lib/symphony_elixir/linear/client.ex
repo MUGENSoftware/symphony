@@ -33,6 +33,11 @@ defmodule SymphonyElixir.Linear.Client do
           state {
             name
           }
+          labels {
+            nodes {
+              name
+            }
+          }
         }
         children(first: $relationFirst) {
           nodes {
@@ -93,6 +98,11 @@ defmodule SymphonyElixir.Linear.Client do
           identifier
           state {
             name
+          }
+          labels {
+            nodes {
+              name
+            }
           }
         }
         children(first: $relationFirst) {
@@ -535,6 +545,7 @@ defmodule SymphonyElixir.Linear.Client do
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
       parent: extract_parent(issue),
+      child_execution_mode: extract_child_execution_mode(issue),
       blocked_by: extract_blockers(issue),
       sub_issues: extract_sub_issues(issue),
       labels: extract_labels(issue),
@@ -708,6 +719,21 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_parent(_), do: nil
+
+  defp extract_child_execution_mode(%{"parent" => parent_issue}) when is_map(parent_issue) do
+    case extract_labels(parent_issue) do
+      labels when is_list(labels) ->
+        cond do
+          "child-mode:serial" in labels -> :serial
+          true -> :parallel
+        end
+
+      _ ->
+        :parallel
+    end
+  end
+
+  defp extract_child_execution_mode(_), do: :parallel
 
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})
        when is_list(inverse_relations) do

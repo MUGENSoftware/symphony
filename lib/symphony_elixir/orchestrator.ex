@@ -313,6 +313,17 @@ defmodule SymphonyElixir.Orchestrator do
     sort_issues_for_dispatch(issues, terminal_state_set())
   end
 
+  @doc false
+  @spec choose_issue_identifiers_for_dispatch_for_test([Issue.t()], term()) :: [String.t()]
+  def choose_issue_identifiers_for_dispatch_for_test(issues, %State{} = state) when is_list(issues) do
+    choose_issue_identifiers_for_dispatch(
+      issues,
+      state,
+      active_state_set(),
+      terminal_state_set()
+    )
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -464,16 +475,40 @@ defmodule SymphonyElixir.Orchestrator do
   defp choose_issues(issues, state) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
+    busy_parent_keys = busy_parent_keys(issues, state)
 
     issues
     |> sort_issues_for_dispatch(terminal_states)
-    |> Enum.reduce(state, fn issue, state_acc ->
-      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
+    |> Enum.reduce({state, busy_parent_keys}, fn issue, {state_acc, busy_parent_keys_acc} ->
+      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) and
+           !parent_busy?(issue, busy_parent_keys_acc) do
+        updated_state = dispatch_issue(state_acc, issue)
+        {updated_state, mark_parent_busy(issue, busy_parent_keys_acc)}
       else
-        state_acc
+        {state_acc, busy_parent_keys_acc}
       end
     end)
+    |> elem(0)
+  end
+
+  defp choose_issue_identifiers_for_dispatch(issues, state, active_states, terminal_states)
+       when is_list(issues) and is_struct(state, State) do
+    busy_parent_keys = busy_parent_keys(issues, state)
+
+    issues
+    |> sort_issues_for_dispatch(terminal_states)
+    |> Enum.reduce({[], busy_parent_keys}, fn issue, {identifiers, busy_parent_keys_acc} ->
+      if should_dispatch_issue?(issue, state, active_states, terminal_states) and
+           !parent_busy?(issue, busy_parent_keys_acc) do
+        {
+          identifiers ++ [issue.identifier],
+          mark_parent_busy(issue, busy_parent_keys_acc)
+        }
+      else
+        {identifiers, busy_parent_keys_acc}
+      end
+    end)
+    |> elem(0)
   end
 
   defp sort_issues_for_dispatch(issues, terminal_states)
@@ -512,6 +547,59 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp child_issue_dispatch_rank(%Issue{}, _terminal_states), do: 0
   defp child_issue_dispatch_rank(_issue, _terminal_states), do: 1
+
+  defp busy_parent_keys(issues, %State{running: running, claimed: claimed})
+       when is_list(issues) and is_map(running) and is_struct(claimed, MapSet) do
+    running
+    |> Map.values()
+    |> Enum.reduce(MapSet.new(), fn
+      %{issue: %Issue{} = issue}, acc -> mark_parent_busy(issue, acc)
+      _entry, acc -> acc
+    end)
+    |> then(fn acc ->
+      Enum.reduce(issues, acc, fn
+        %Issue{id: issue_id} = issue, acc when is_binary(issue_id) ->
+          if MapSet.member?(claimed, issue_id) do
+            mark_parent_busy(issue, acc)
+          else
+            acc
+          end
+
+        _issue, acc ->
+          acc
+      end)
+    end)
+  end
+
+  defp busy_parent_keys(_issues, _state), do: MapSet.new()
+
+  defp parent_busy?(%Issue{} = issue, busy_parent_keys) when is_struct(busy_parent_keys, MapSet) do
+    case serial_parent_dispatch_key(issue) do
+      nil -> false
+      key -> MapSet.member?(busy_parent_keys, key)
+    end
+  end
+
+  defp parent_busy?(_issue, _busy_parent_keys), do: false
+
+  defp mark_parent_busy(%Issue{} = issue, busy_parent_keys) when is_struct(busy_parent_keys, MapSet) do
+    case serial_parent_dispatch_key(issue) do
+      nil -> busy_parent_keys
+      key -> MapSet.put(busy_parent_keys, key)
+    end
+  end
+
+  defp mark_parent_busy(_issue, busy_parent_keys), do: busy_parent_keys
+
+  defp serial_parent_dispatch_key(%Issue{child_execution_mode: :serial, parent: %{id: parent_id}})
+       when is_binary(parent_id),
+       do: {:parent_id, parent_id}
+
+  defp serial_parent_dispatch_key(%Issue{child_execution_mode: :serial, parent: %{identifier: parent_identifier}})
+       when is_binary(parent_identifier),
+       do: {:parent_identifier, parent_identifier}
+
+  defp serial_parent_dispatch_key(_issue), do: nil
 
   defp should_dispatch_issue?(
          %Issue{} = issue,

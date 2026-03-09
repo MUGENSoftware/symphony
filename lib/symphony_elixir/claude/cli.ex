@@ -85,11 +85,12 @@ defmodule SymphonyElixir.Claude.Cli do
     turn_start_ms = now_ms()
 
     Tracer.with_span :"claude.execute_turn", %{
-      attributes: span_attrs(issue, %{
-        mode: mode,
-        session_id: Map.get(session, :session_id),
-        resume_session_id: Map.get(session, :session_id)
-      })
+      attributes:
+        span_attrs(issue, %{
+          mode: mode,
+          session_id: Map.get(session, :session_id),
+          resume_session_id: Map.get(session, :session_id)
+        })
     } do
       metadata = command_metadata(command)
       maybe_emit_stream_session_started(command, session, on_message, metadata)
@@ -258,8 +259,12 @@ defmodule SymphonyElixir.Claude.Cli do
         end
 
       case result do
-        {:ok, _} -> result
-        {:error, reason} -> Tracer.set_status(:error, inspect(reason)); result
+        {:ok, _} ->
+          result
+
+        {:error, reason} ->
+          Tracer.set_status(:error, inspect(reason))
+          result
       end
     end
   end
@@ -566,68 +571,68 @@ defmodule SymphonyElixir.Claude.Cli do
          opts
        ) do
     Tracer.with_span :"claude.app_server.consume" do
-    setup_requests =
-      if is_binary(previous_thread_id) and previous_thread_id != "" do
-        [
-          {3, "turn/start",
-           %{
-             "cwd" => Path.expand(workspace),
-             "approvalPolicy" => Config.claude_approval_policy(),
-             "sandboxPolicy" => Config.claude_turn_sandbox_policy(workspace),
-             "threadId" => previous_thread_id,
-             "input" => turn_input_payload(prompt)
-           }
-           |> reject_nil_values()},
-          {4, "turn/input", %{"input" => turn_input_payload(prompt)}}
-        ]
-      else
-        [
-          {1, "initialize", %{"capabilities" => %{"experimentalApi" => true}}},
-          {2, "thread/start",
-           %{
-             "cwd" => Path.expand(workspace),
-             "approvalPolicy" => Config.claude_approval_policy(),
-             "sandbox" => Config.claude_thread_sandbox(),
-             "dynamicTools" => DynamicToolRegistry.tool_specs()
-           }
-           |> reject_nil_values()},
-          {3, "turn/start",
-           %{
-             "cwd" => Path.expand(workspace),
-             "approvalPolicy" => Config.claude_approval_policy(),
-             "sandboxPolicy" => Config.claude_turn_sandbox_policy(workspace),
-             "input" => turn_input_payload(prompt)
-           }
-           |> reject_nil_values()},
-          {4, "turn/input", %{"input" => turn_input_payload(prompt)}}
-        ]
+      setup_requests =
+        if is_binary(previous_thread_id) and previous_thread_id != "" do
+          [
+            {3, "turn/start",
+             %{
+               "cwd" => Path.expand(workspace),
+               "approvalPolicy" => Config.claude_approval_policy(),
+               "sandboxPolicy" => Config.claude_turn_sandbox_policy(workspace),
+               "threadId" => previous_thread_id,
+               "input" => turn_input_payload(prompt)
+             }
+             |> reject_nil_values()},
+            {4, "turn/input", %{"input" => turn_input_payload(prompt)}}
+          ]
+        else
+          [
+            {1, "initialize", %{"capabilities" => %{"experimentalApi" => true}}},
+            {2, "thread/start",
+             %{
+               "cwd" => Path.expand(workspace),
+               "approvalPolicy" => Config.claude_approval_policy(),
+               "sandbox" => Config.claude_thread_sandbox(),
+               "dynamicTools" => DynamicToolRegistry.tool_specs()
+             }
+             |> reject_nil_values()},
+            {3, "turn/start",
+             %{
+               "cwd" => Path.expand(workspace),
+               "approvalPolicy" => Config.claude_approval_policy(),
+               "sandboxPolicy" => Config.claude_turn_sandbox_policy(workspace),
+               "input" => turn_input_payload(prompt)
+             }
+             |> reject_nil_values()},
+            {4, "turn/input", %{"input" => turn_input_payload(prompt)}}
+          ]
+        end
+
+      with :ok <- send_app_server_requests(port, setup_requests) do
+        turn_timeout = Config.claude_turn_timeout_ms()
+        stall_timeout = Config.claude_stall_timeout_ms()
+        effective_timeout = min(turn_timeout, stall_timeout)
+        opts_with_workspace = Keyword.put(opts, :workspace, workspace)
+        timeout_context = %{stall_timeout: effective_timeout, turn_timeout: turn_timeout, start_ms: now_ms()}
+
+        result =
+          receive_app_server_loop(
+            port,
+            on_message,
+            metadata,
+            opts_with_workspace,
+            timeout_context,
+            "",
+            %{thread_id: previous_thread_id}
+          )
+
+        case result do
+          {:error, reason} -> Tracer.set_status(:error, inspect(reason))
+          _ -> :ok
+        end
+
+        result
       end
-
-    with :ok <- send_app_server_requests(port, setup_requests) do
-      turn_timeout = Config.claude_turn_timeout_ms()
-      stall_timeout = Config.claude_stall_timeout_ms()
-      effective_timeout = min(turn_timeout, stall_timeout)
-      opts_with_workspace = Keyword.put(opts, :workspace, workspace)
-      timeout_context = %{stall_timeout: effective_timeout, turn_timeout: turn_timeout, start_ms: now_ms()}
-
-      result =
-        receive_app_server_loop(
-          port,
-          on_message,
-          metadata,
-          opts_with_workspace,
-          timeout_context,
-          "",
-          %{thread_id: previous_thread_id}
-        )
-
-      case result do
-        {:error, reason} -> Tracer.set_status(:error, inspect(reason))
-        _ -> :ok
-      end
-
-      result
-    end
     end
   end
 

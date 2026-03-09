@@ -19,8 +19,7 @@ defmodule SymphonyElixir.Claude.CliInstrumentationTest do
 
       Telemetry.claude_turn_completed(%{result: "completed", mode: "stream_json"})
 
-      assert_receive {:telemetry_event, [:symphony, :claude, :turns], %{total: 1},
-                      %{result: "completed", mode: "stream_json"}}
+      assert_receive {:telemetry_event, [:symphony, :claude, :turns], %{total: 1}, %{result: "completed", mode: "stream_json"}}
 
       :telemetry.detach(handler_id)
     end
@@ -42,8 +41,7 @@ defmodule SymphonyElixir.Claude.CliInstrumentationTest do
 
       Telemetry.claude_turn_duration(1234, %{result: "completed", mode: "stream_json"})
 
-      assert_receive {:telemetry_event, [:symphony, :claude, :turn_duration_ms], %{duration: 1234},
-                      %{result: "completed", mode: "stream_json"}}
+      assert_receive {:telemetry_event, [:symphony, :claude, :turn_duration_ms], %{duration: 1234}, %{result: "completed", mode: "stream_json"}}
 
       :telemetry.detach(handler_id)
     end
