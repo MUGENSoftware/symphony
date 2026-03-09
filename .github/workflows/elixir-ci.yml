@@ -20,9 +20,6 @@ jobs:
   checks:
     name: checks
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,15 +29,14 @@ jobs:
         with:
           install: true
           cache: true
-          working_directory: elixir
 
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
           path: |
-            elixir/deps
-            elixir/_build
-          key: ${{ runner.os }}-mix-checks-${{ hashFiles('elixir/mix.lock') }}
+            deps
+            _build
+          key: ${{ runner.os }}-mix-checks-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-checks-
             ${{ runner.os }}-mix-
@@ -62,9 +58,6 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,15 +67,14 @@ jobs:
         with:
           install: true
           cache: true
-          working_directory: elixir
 
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
           path: |
-            elixir/deps
-            elixir/_build
-          key: ${{ runner.os }}-mix-test-${{ hashFiles('elixir/mix.lock') }}
+            deps
+            _build
+          key: ${{ runner.os }}-mix-test-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-test-
             ${{ runner.os }}-mix-
@@ -101,9 +93,6 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -113,15 +102,14 @@ jobs:
         with:
           install: true
           cache: true
-          working_directory: elixir
 
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
           path: |
-            elixir/deps
-            elixir/_build
-          key: ${{ runner.os }}-mix-build-${{ hashFiles('elixir/mix.lock') }}
+            deps
+            _build
+          key: ${{ runner.os }}-mix-build-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-build-
             ${{ runner.os }}-mix-
