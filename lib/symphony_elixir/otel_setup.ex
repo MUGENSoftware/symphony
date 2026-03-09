@@ -127,7 +127,7 @@ defmodule SymphonyElixir.OtelSetup do
       nil ->
         :ok
 
-      _port ->
+      port ->
         case Process.whereis(:symphony_prometheus) do
           nil ->
             {:ok, _pid} =
@@ -136,6 +136,7 @@ defmodule SymphonyElixir.OtelSetup do
                 name: :symphony_prometheus
               )
 
+            {:ok, _http_pid} = SymphonyElixir.PrometheusEndpoint.start(port)
             :ok
 
           _pid ->
@@ -146,6 +147,10 @@ defmodule SymphonyElixir.OtelSetup do
 
   defp telemetry_events do
     [
+      [:symphony, :poll_cycles],
+      [:symphony, :poll_cycle_duration_ms],
+      [:symphony, :issue_dispatch],
+      [:symphony, :issue_retry],
       [:symphony, :agent_runs, :started],
       [:symphony, :agent_runs, :completed],
       [:symphony, :agent_runs, :failed],
@@ -154,7 +159,10 @@ defmodule SymphonyElixir.OtelSetup do
       [:symphony, :linear, :request],
       [:symphony, :claude, :turns],
       [:symphony, :claude, :turn_duration_ms],
-      [:symphony, :claude, :usage_limit_events]
+      [:symphony, :claude, :usage_limit_events],
+      [:symphony, :running_agents],
+      [:symphony, :retry_queue_depth],
+      [:symphony, :claude_cooldown_active]
     ]
   end
 

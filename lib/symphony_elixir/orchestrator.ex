@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   require OpenTelemetry.Tracer, as: Tracer
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, Git, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Git, StatusDashboard, Telemetry, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -82,7 +82,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    poll_start_ms = System.monotonic_time(:millisecond)
     state = maybe_dispatch(state)
+    poll_duration_ms = System.monotonic_time(:millisecond) - poll_start_ms
+
+    Telemetry.poll_cycle_completed()
+    Telemetry.poll_cycle_duration(poll_duration_ms)
+    emit_gauges(state)
+
     now_ms = System.monotonic_time(:millisecond)
     next_poll_due_at_ms = now_ms + state.poll_interval_ms
     :ok = schedule_tick(state.poll_interval_ms)
@@ -879,6 +886,7 @@ defmodule SymphonyElixir.Orchestrator do
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
+        Telemetry.issue_dispatched()
 
         Logger.info(
           "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}" <>
@@ -982,6 +990,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
 
     timer_ref = Process.send_after(self(), {:retry_issue, issue_id}, delay_ms)
+    Telemetry.issue_retried()
 
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
@@ -1633,6 +1642,12 @@ defmodule SymphonyElixir.Orchestrator do
     state
     |> cancel_claude_availability_timer()
     |> Map.put(:claude_availability, nil)
+  end
+
+  defp emit_gauges(%State{} = state) do
+    Telemetry.report_running_agents(map_size(state.running))
+    Telemetry.report_retry_queue_depth(map_size(state.retry_attempts))
+    Telemetry.report_claude_cooldown_active(if claude_unavailable?(state), do: 1, else: 0)
   end
 
   defp claude_unavailable?(%State{} = state) do
