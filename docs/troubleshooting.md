@@ -19,7 +19,6 @@ The startup contract was not satisfied before the application booted.
 
 ### What To Check
 
-- you passed `--i-understand-that-this-will-be-running-without-the-usual-guardrails`
 - the workflow path exists
 - `--port` is a non-negative integer
 - `--logs-root` is not blank

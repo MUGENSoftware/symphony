@@ -51,7 +51,6 @@ mise exec -- mix build
 # Run Symphony
 LINEAR_API_KEY=lin_api_xxx \
   mise exec -- ./bin/symphony \
-  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
   ./WORKFLOW.md
 ```
 

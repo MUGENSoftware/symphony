@@ -429,7 +429,6 @@ Supported CLI flags:
 
 - `--logs-root <path>`
 - `--port <port>`
-- `--i-understand-that-this-will-be-running-without-the-usual-guardrails`
 
 CLI behavior:
 

@@ -59,7 +59,6 @@ mise exec -- mix setup
 mise exec -- mix build
 LINEAR_API_KEY=lin_api_xxx \
   mise exec -- ./bin/symphony \
-  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
   ./WORKFLOW.md
 ```
 
@@ -68,7 +67,6 @@ If you want the web dashboard:
 ```bash
 LINEAR_API_KEY=lin_api_xxx \
   mise exec -- ./bin/symphony \
-  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
   --port 4000 \
   ./WORKFLOW.md
 ```
