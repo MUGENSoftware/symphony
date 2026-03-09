@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Claude.SessionLog do
   @moduledoc """
-  Persists raw Claude session output per issue/session and exposes metadata for the API.
+  Persists Claude session output per issue/session as JSONL and exposes metadata for the API.
   """
 
   alias SymphonyElixir.LogFile
@@ -19,7 +19,7 @@ defmodule SymphonyElixir.Claude.SessionLog do
   def begin_turn(issue_identifier) when is_binary(issue_identifier) do
     started_at = timestamp_token()
     issue_dir = issue_directory(issue_identifier)
-    pending_path = Path.join(issue_dir, "#{started_at}--pending.log")
+    pending_path = Path.join(issue_dir, "#{started_at}--pending.raw")
 
     with :ok <- File.mkdir_p(issue_dir),
          :ok <- File.write(pending_path, "", [:write]) do
@@ -38,13 +38,13 @@ defmodule SymphonyElixir.Claude.SessionLog do
   def finish_turn(%{issue_dir: issue_dir, pending_path: pending_path, started_at: started_at}, session_id) do
     final_name =
       case sanitize_token(session_id) do
-        nil -> "#{started_at}.log"
-        sanitized -> "#{started_at}--#{sanitized}.log"
+        nil -> "#{started_at}.jsonl"
+        sanitized -> "#{started_at}--#{sanitized}.jsonl"
       end
 
     final_path = Path.join(issue_dir, final_name)
 
-    with :ok <- maybe_rename(pending_path, final_path),
+    with :ok <- materialize_jsonl_log(pending_path, final_path),
          :ok <- promote_latest(final_path, issue_dir) do
       {:ok, final_path}
     else
@@ -56,7 +56,7 @@ defmodule SymphonyElixir.Claude.SessionLog do
   def list_issue_logs(issue_identifier) when is_binary(issue_identifier) do
     issue_identifier
     |> issue_directory()
-    |> Path.join("*.log")
+    |> Path.join("*.jsonl")
     |> Path.wildcard()
     |> Enum.map(&log_metadata/1)
     |> Enum.reject(&is_nil/1)
@@ -74,25 +74,21 @@ defmodule SymphonyElixir.Claude.SessionLog do
     |> Path.dirname()
   end
 
-  defp maybe_rename(path, path), do: :ok
-
-  defp maybe_rename(source, destination) do
-    case File.rename(source, destination) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        with :ok <- File.cp(source, destination),
-             :ok <- File.rm(source) do
-          :ok
-        else
-          {:error, copy_reason} -> {:error, copy_reason || reason}
-        end
+  defp materialize_jsonl_log(source, destination) do
+    with {:ok, contents} <- File.read(source),
+         :ok <- write_jsonl_records(destination, contents) do
+      File.rm(source)
     end
   end
 
+  defp write_jsonl_records(destination, contents) do
+    records = build_records(contents)
+    encoded = Enum.map_join(records, "\n", &Jason.encode!/1) <> trailing_newline(records)
+    File.write(destination, encoded)
+  end
+
   defp promote_latest(final_path, issue_dir) do
-    latest_path = Path.join(issue_dir, "latest.log")
+    latest_path = Path.join(issue_dir, "latest.jsonl")
     File.rm_rf(latest_path)
 
     case File.ln_s(final_path, latest_path) do
@@ -128,7 +124,7 @@ defmodule SymphonyElixir.Claude.SessionLog do
   end
 
   defp session_id_from_filename(path) do
-    case Regex.run(~r/^\d{8}T\d{6}Z--(.+)\.log$/, Path.basename(path), capture: :all_but_first) do
+    case Regex.run(~r/^\d{8}T\d{6}Z--(.+)\.jsonl$/, Path.basename(path), capture: :all_but_first) do
       [session_id] when session_id not in ["pending", "latest"] -> session_id
       _ -> nil
     end
@@ -139,14 +135,61 @@ defmodule SymphonyElixir.Claude.SessionLog do
     |> String.split("\n", trim: true)
     |> Enum.find_value(fn line ->
       case Jason.decode(line) do
-        {:ok, payload} ->
-          payload["session_id"]
+        {:ok, %{"session_id" => session_id}} when is_binary(session_id) ->
+          session_id
+
+        {:ok, %{"payload" => %{"session_id" => session_id}}} when is_binary(session_id) ->
+          session_id
 
         {:error, _reason} ->
+          nil
+
+        _ ->
           nil
       end
     end)
   end
+
+  defp build_records(contents) when is_binary(contents) do
+    contents
+    |> String.split("\n", trim: true)
+    |> Enum.map(&build_record/1)
+  end
+
+  defp build_record(line) when is_binary(line) do
+    timestamp = DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601()
+
+    case Jason.decode(line) do
+      {:ok, payload} when is_map(payload) ->
+        %{
+          "time" => timestamp,
+          "kind" => "claude_stream",
+          "payload" => payload,
+          "session_id" => session_id_from_payload(payload)
+        }
+        |> reject_nil_values()
+
+      _ ->
+        %{
+          "time" => timestamp,
+          "kind" => "raw_line",
+          "text" => line
+        }
+    end
+  end
+
+  defp session_id_from_payload(%{"session_id" => session_id}) when is_binary(session_id), do: session_id
+  defp session_id_from_payload(_payload), do: nil
+
+  defp reject_nil_values(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
+  end
+
+  defp trailing_newline([]), do: ""
+  defp trailing_newline(_records), do: "\n"
 
   defp sanitize_issue_identifier(issue_identifier) do
     sanitize_token(issue_identifier) || "unknown-issue"

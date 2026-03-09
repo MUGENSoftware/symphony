@@ -113,22 +113,7 @@ defmodule SymphonyElixir.Git do
         checkout(workspace, branch_name)
 
       {_output, _status} ->
-        # Branch doesn't exist locally, check if it exists on remote
-        case run_git(workspace, ["rev-parse", "--verify", "origin/#{branch_name}"]) do
-          {_output, 0} ->
-            # Exists on remote, create local tracking branch
-            case run_git(workspace, ["checkout", "-b", branch_name, "origin/#{branch_name}"]) do
-              {_output, 0} -> :ok
-              {output, status} -> {:error, {:git_checkout_failed, status, output}}
-            end
-
-          {_output, _status} ->
-            # Doesn't exist anywhere, create from base branch
-            case run_git(workspace, ["checkout", "-b", branch_name, "origin/#{base_branch}"]) do
-              {_output, 0} -> :ok
-              {output, status} -> {:error, {:git_branch_create_failed, status, output}}
-            end
-        end
+        ensure_remote_or_base_branch(workspace, branch_name, base_branch)
     end
   end
 
@@ -155,11 +140,11 @@ defmodule SymphonyElixir.Git do
   # -- Private: publish --
 
   defp maybe_push(workspace, branch_name) do
-    unless Config.git_auto_push?() do
+    if Config.git_auto_push?() do
+      do_push(workspace, branch_name)
+    else
       Logger.info("Git auto-push disabled, skipping push workspace=#{workspace}")
       :ok
-    else
-      do_push(workspace, branch_name)
     end
   end
 
@@ -192,11 +177,37 @@ defmodule SymphonyElixir.Git do
   end
 
   defp maybe_create_or_update_pr(workspace, issue, base_branch) do
-    unless Config.git_auto_pr?() do
+    if Config.git_auto_pr?() do
+      do_create_or_update_pr(workspace, issue, base_branch)
+    else
       Logger.info("Git auto-pr disabled, skipping PR workspace=#{workspace}")
       :ok
-    else
-      do_create_or_update_pr(workspace, issue, base_branch)
+    end
+  end
+
+  defp ensure_remote_or_base_branch(workspace, branch_name, base_branch) do
+    case run_git(workspace, ["rev-parse", "--verify", "origin/#{branch_name}"]) do
+      {_output, 0} ->
+        # Exists on remote, create local tracking branch
+        create_tracking_branch(workspace, branch_name)
+
+      {_output, _status} ->
+        # Doesn't exist anywhere, create from base branch
+        create_branch_from_base(workspace, branch_name, base_branch)
+    end
+  end
+
+  defp create_tracking_branch(workspace, branch_name) do
+    case run_git(workspace, ["checkout", "-b", branch_name, "origin/#{branch_name}"]) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:git_checkout_failed, status, output}}
+    end
+  end
+
+  defp create_branch_from_base(workspace, branch_name, base_branch) do
+    case run_git(workspace, ["checkout", "-b", branch_name, "origin/#{base_branch}"]) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:git_branch_create_failed, status, output}}
     end
   end
 

@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Web.Layouts do
 
   use Phoenix.Component
 
+  @spec root(map()) :: Phoenix.LiveView.Rendered.t()
   def root(assigns) do
     ~H"""
     <!DOCTYPE html>

@@ -1,15 +1,18 @@
 defmodule SymphonyElixir.LogFile do
   @moduledoc """
-  Configures OTP's built-in rotating disk log handler for application logs.
+  Configures JSON log files for application lifecycle and related artifacts.
   """
 
   require Logger
 
-  @handler_id :symphony_disk_log
-  @default_log_relative_path "log/symphony.log"
-  @default_linear_pull_log_relative_path "log/linear-pull.log"
+  alias LoggerJSON.Formatters.Basic, as: JSONFormatter
+
+  @handler_id :symphony_json_log
+  @default_log_relative_path "log/symphony.jsonl"
+  @default_linear_pull_log_relative_path "log/linear-pull.jsonl"
   @default_max_bytes 10 * 1024 * 1024
   @default_max_files 5
+  @rotation_env_var "SYMPHONY_LOG_ROTATION"
 
   @spec default_log_file() :: Path.t()
   def default_log_file do
@@ -41,36 +44,49 @@ defmodule SymphonyElixir.LogFile do
   @spec configure() :: :ok
   def configure do
     log_file = Application.get_env(:symphony_elixir, :log_file, default_log_file())
-    max_bytes = Application.get_env(:symphony_elixir, :log_file_max_bytes, @default_max_bytes)
-    max_files = Application.get_env(:symphony_elixir, :log_file_max_files, @default_max_files)
+    rotation_enabled = log_rotation_enabled?()
 
-    setup_disk_handler(log_file, max_bytes, max_files)
+    max_bytes =
+      if rotation_enabled do
+        Application.get_env(:symphony_elixir, :log_file_max_bytes, @default_max_bytes)
+      else
+        :infinity
+      end
+
+    max_files =
+      if rotation_enabled do
+        Application.get_env(:symphony_elixir, :log_file_max_files, @default_max_files)
+      else
+        0
+      end
+
+    setup_handler(log_file, max_bytes, max_files)
   end
 
-  defp setup_disk_handler(log_file, max_bytes, max_files) do
+  defp setup_handler(log_file, max_bytes, max_files) do
     expanded_path = Path.expand(log_file)
     :ok = File.mkdir_p(Path.dirname(expanded_path))
-    :ok = remove_existing_handler()
+    :ok = remove_handler(@handler_id)
 
     case :logger.add_handler(
            @handler_id,
-           :logger_disk_log_h,
-           disk_log_handler_config(expanded_path, max_bytes, max_files)
+           :logger_std_h,
+           handler_config(expanded_path, max_bytes, max_files)
          ) do
       :ok ->
         remove_default_console_handler()
         :ok
 
       {:error, reason} ->
-        Logger.warning("Failed to configure rotating log file handler: #{inspect(reason)}")
+        Logger.warning("Failed to configure JSON log handler: #{inspect(reason)}")
         :ok
     end
   end
 
-  defp remove_existing_handler do
-    case :logger.remove_handler(@handler_id) do
+  defp remove_handler(handler_id) do
+    case :logger.remove_handler(handler_id) do
       :ok -> :ok
-      {:error, {:not_found, @handler_id}} -> :ok
+      {:error, {:not_found, ^handler_id}} -> :ok
       {:error, _reason} -> :ok
     end
   end
@@ -83,13 +99,39 @@ defmodule SymphonyElixir.LogFile do
     end
   end
 
-  defp disk_log_handler_config(path, max_bytes, max_files) do
+  defp log_rotation_enabled? do
+    case Application.get_env(:symphony_elixir, :log_file_rotation_enabled) do
+      nil -> env_rotation_enabled?(System.get_env(@rotation_env_var))
+      value -> truthy_rotation_setting?(value)
+    end
+  end
+
+  defp env_rotation_enabled?(nil), do: true
+  defp env_rotation_enabled?(value), do: truthy_rotation_setting?(value)
+
+  defp truthy_rotation_setting?(value) when is_boolean(value), do: value
+
+  defp truthy_rotation_setting?(value) when is_binary(value) do
+    normalized = value |> String.trim() |> String.downcase()
+    normalized not in ["0", "false", "off", "no", "disabled"]
+  end
+
+  defp truthy_rotation_setting?(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> truthy_rotation_setting?()
+  end
+
+  defp truthy_rotation_setting?(value) when is_integer(value), do: value != 0
+  defp truthy_rotation_setting?(_value), do: true
+
+  defp handler_config(path, max_bytes, max_files) do
     %{
       level: :all,
-      formatter: {:logger_formatter, %{single_line: true}},
+      formatter: JSONFormatter.new(metadata: :all),
       config: %{
+        type: :file,
         file: String.to_charlist(path),
-        type: :wrap,
         max_no_bytes: max_bytes,
         max_no_files: max_files
       }

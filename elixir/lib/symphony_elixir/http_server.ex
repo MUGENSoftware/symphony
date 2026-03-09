@@ -9,6 +9,7 @@ defmodule SymphonyElixir.HttpServer do
   use GenServer
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Web.{Endpoint, ErrorJSON}
 
   defmodule State do
     @moduledoc false
@@ -65,17 +66,17 @@ defmodule SymphonyElixir.HttpServer do
     Application.put_env(:symphony_elixir, :web_orchestrator, orchestrator)
     Application.put_env(:symphony_elixir, :web_snapshot_timeout_ms, snapshot_timeout_ms)
 
-    Application.put_env(:symphony_elixir, SymphonyElixir.Web.Endpoint,
+    Application.put_env(:symphony_elixir, Endpoint,
       adapter: Bandit.PhoenixAdapter,
       http: [ip: ip, port: port],
       server: true,
       secret_key_base: secret_key_base(),
       live_view: [signing_salt: "symphony_lv"],
       pubsub_server: SymphonyElixir.PubSub,
-      render_errors: [formats: [json: SymphonyElixir.Web.ErrorJSON]]
+      render_errors: [formats: [json: ErrorJSON]]
     )
 
-    case SymphonyElixir.Web.Endpoint.start_link([]) do
+    case Endpoint.start_link([]) do
       {:ok, _pid} ->
         {:ok,
          %State{

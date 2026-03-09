@@ -5,8 +5,8 @@ defmodule SymphonyElixir.Web.Presenter do
   Used by the JSON API controller and the LiveView dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixir.Claude.SessionLog
+  alias SymphonyElixir.{Config, Orchestrator}
 
   @spec state_payload(GenServer.name(), pos_integer()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do

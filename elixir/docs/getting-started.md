@@ -140,9 +140,10 @@ On a healthy start:
 
 Important log files:
 
-- `./log/symphony.log` for general runtime lifecycle
-- `./log/linear-pull.log` for Linear fetch attempts, returned issue identifiers, pagination, and
+- `./log/symphony.jsonl` for general runtime lifecycle
+- `./log/linear-pull.jsonl` for Linear fetch attempts, returned issue identifiers, pagination, and
   fetch failures
+- `./log/claude/<issue_identifier>/*.jsonl` for Claude session artifacts
 - `./log/claude.mcp.json` for the generated default Claude MCP config when `claude.mcp_config` is
   not set
 

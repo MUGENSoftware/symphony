@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Claude.{SessionLog, UsageLimit}
+
   test "app server auto-adds --verbose for stream-json and preserves command args" do
     test_root =
       Path.join(
@@ -31,7 +33,7 @@ defmodule SymphonyElixir.AppServerTest do
       end)
 
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
       File.mkdir_p!(workspace)
 
       File.write!(claude_binary, """
@@ -71,8 +73,8 @@ defmodule SymphonyElixir.AppServerTest do
       assert String.contains?(trace, "-p hello")
       assert log =~ ~s([STREAM_JSON] {"type":"result","session_id":"session-100")
 
-      logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-100")
-      assert Enum.any?(logs, &String.ends_with?(&1.path, "latest.log"))
+      logs = SessionLog.list_issue_logs("MT-100")
+      assert Enum.any?(logs, &String.ends_with?(&1.path, "latest.jsonl"))
       assert Enum.any?(logs, &(&1.session_id == "session-100"))
     after
       File.rm_rf(test_root)
@@ -101,7 +103,7 @@ defmodule SymphonyElixir.AppServerTest do
         end
       end)
 
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh
@@ -128,8 +130,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:ok, %{}} = AppServer.run(workspace, "hello", issue)
 
-      logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-101")
-      assert length(logs) >= 1
+      logs = SessionLog.list_issue_logs("MT-101")
+      assert logs != []
       assert Enum.any?(logs, &String.contains?(&1.tail, "booting stream-json session"))
     after
       File.rm_rf(test_root)
@@ -158,7 +160,7 @@ defmodule SymphonyElixir.AppServerTest do
         end
       end)
 
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh
@@ -186,7 +188,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:ok, %{session_id: "session-102"}} = AppServer.run(workspace, "hello", issue)
 
-      logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-102")
+      logs = SessionLog.list_issue_logs("MT-102")
 
       assert Enum.any?(logs, fn log ->
                String.contains?(log.tail, "warning: stderr noise") and
@@ -263,7 +265,7 @@ defmodule SymphonyElixir.AppServerTest do
               reset_at: ~U[2026-03-08 09:00:00Z],
               retry_after_ms: 7_200_000
             }} =
-             SymphonyElixir.Claude.UsageLimit.parse_message(
+             UsageLimit.parse_message(
                "You've hit your limit · resets 6am (America/Sao_Paulo)",
                now
              )
@@ -1479,7 +1481,7 @@ defmodule SymphonyElixir.AppServerTest do
       File.mkdir_p!(workspace)
       System.put_env("PATH", "#{bin_dir}:/usr/bin:/bin")
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh
@@ -1561,7 +1563,7 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("PATH", "/usr/bin:/bin")
       System.put_env("HOME", home_dir)
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh

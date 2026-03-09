@@ -10,10 +10,20 @@ This guide defines logging conventions for Symphony so Claude Code can diagnose 
 
 ## Log Files
 
-- `log/symphony.log`: main application lifecycle log.
-- `log/linear-pull.log`: dedicated Linear read/poll log for candidate issue fetches, state refreshes,
+- `log/symphony.jsonl`: main application lifecycle log.
+- `log/linear-pull.jsonl`: dedicated Linear read/poll log for candidate issue fetches, state refreshes,
   viewer lookup, pagination, and fetch failures.
+- `log/claude/<issue_identifier>/*.jsonl`: Claude session artifacts, including `latest.jsonl`.
 - `--logs-root <path>` relocates both files under the same root.
+
+## Development Rotation Toggle
+
+To disable lifecycle log rotation temporarily during development, use either:
+
+- app env: `Application.put_env(:symphony_elixir, :log_file_rotation_enabled, false)`
+- env var: `SYMPHONY_LOG_ROTATION=false`
+
+App env takes precedence over the env var when both are set.
 
 ## Required Context Fields
 
@@ -38,12 +48,12 @@ When logging Claude Code execution lifecycle events, include:
 - `AgentRunner`: log start/completion/failure with issue context, plus `session_id` when known.
 - `Orchestrator`: log dispatch, retry, terminal/non-active transitions, and worker exits with issue context. Include `session_id` whenever running-entry data has it.
 - `Claude.Cli`: log session start/completion/error with issue context and `session_id`.
-- `Linear.Client`: write pull activity to `log/linear-pull.log` with `event=...` plus operation,
+- `Linear.Client`: write pull activity to `log/linear-pull.jsonl` with `event`, operation,
   states, issue ids/identifiers, pagination info, and concise failure reasons.
 
 ## Linear Pull Log
 
-Use `log/linear-pull.log` first when you need to confirm whether Symphony is talking to Linear.
+Use `log/linear-pull.jsonl` first when you need to confirm whether Symphony is talking to Linear.
 
 High-signal events:
 

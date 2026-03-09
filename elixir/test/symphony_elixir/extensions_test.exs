@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.ExtensionsTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Claude.SessionLog
+  alias SymphonyElixir.HttpServer.State, as: HttpServerState
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -283,7 +285,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     orchestrator_name = Module.concat(__MODULE__, :HttpOrchestrator)
     server_name = Module.concat(__MODULE__, :HttpServer)
     log_root = Path.join(System.tmp_dir!(), "symphony-http-logs-#{System.unique_integer([:positive])}")
-    Application.put_env(:symphony_elixir, :log_file, Path.join(log_root, "log/symphony.log"))
+    Application.put_env(:symphony_elixir, :log_file, Path.join(log_root, "log/symphony.jsonl"))
     {:ok, orchestrator_pid} = Orchestrator.start_link(name: orchestrator_name)
 
     {:ok, server_pid} =
@@ -325,9 +327,15 @@ defmodule SymphonyElixir.ExtensionsTest do
       started_at: DateTime.utc_now()
     }
 
-    {:ok, log_ref} = SymphonyElixir.Claude.SessionLog.begin_turn("MT-HTTP")
-    File.write!(log_ref.pending_path, ~s({"type":"result","session_id":"thread-http","usage":{"input_tokens":4,"output_tokens":8}}) <> "\n")
-    assert {:ok, _final_path} = SymphonyElixir.Claude.SessionLog.finish_turn(log_ref, "thread-http")
+    {:ok, log_ref} = SessionLog.begin_turn("MT-HTTP")
+
+    File.write!(
+      log_ref.pending_path,
+      ~s({"type":"result","session_id":"thread-http","usage":{"input_tokens":4,"output_tokens":8}}) <>
+        "\n"
+    )
+
+    assert {:ok, _final_path} = SessionLog.finish_turn(log_ref, "thread-http")
 
     :sys.replace_state(orchestrator_pid, fn state ->
       %{
@@ -640,7 +648,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert status == 202
     assert %{"queued" => true} = Jason.decode!(body)
 
-    assert :ok = HttpServer.terminate(:normal, %SymphonyElixir.HttpServer.State{port: 0, orchestrator: orchestrator_name, snapshot_timeout_ms: 1, owns_endpoint: false})
+    assert :ok =
+             HttpServer.terminate(
+               :normal,
+               %HttpServerState{
+                 port: 0,
+                 orchestrator: orchestrator_name,
+                 snapshot_timeout_ms: 1,
+                 owns_endpoint: false
+               }
+             )
   end
 
   test "http server serves static assets for dashboard css and phoenix js" do

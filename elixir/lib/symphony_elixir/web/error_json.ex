@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Web.ErrorJSON do
   Fallback error renderer for unmatched routes.
   """
 
+  @spec render(String.t(), map()) :: map()
   def render("404.json", _assigns) do
     %{error: %{code: "not_found", message: "Route not found"}}
   end

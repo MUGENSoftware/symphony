@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Linear.PullLog do
   @moduledoc """
-  Dedicated append-only log for Linear poll and refresh activity.
+  Dedicated append-only JSON log for Linear poll and refresh activity.
   """
 
   require Logger
@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Linear.PullLog do
   @spec log(atom() | String.t(), map() | keyword()) :: :ok
   def log(event, fields \\ %{})
 
+  @spec log(atom() | String.t(), map() | keyword()) :: :ok
   def log(event, fields) when is_list(fields) do
     log(event, Map.new(fields))
   end
@@ -35,30 +36,45 @@ defmodule SymphonyElixir.Linear.PullLog do
   end
 
   defp format_line(event, fields) do
-    event_value =
-      case event do
-        value when is_atom(value) -> Atom.to_string(value)
-        value -> to_string(value)
-      end
+    payload =
+      fields
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Enum.reduce(
+        %{
+          time: DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+          event: normalize_event(event)
+        },
+        fn {key, value}, acc ->
+          Map.put(acc, key, normalize_value(value))
+        end
+      )
 
-    parts =
-      [
-        "timestamp=" <> DateTime.to_iso8601(DateTime.utc_now()),
-        "event=" <> inspect(event_value)
-      ] ++
-        (fields
-         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-         |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
-         |> Enum.map(fn {key, value} ->
-           "#{key}=#{format_value(value)}"
-         end))
-
-    Enum.join(parts, " ") <> "\n"
+    Jason.encode_to_iodata!(payload)
+    |> IO.iodata_to_binary()
+    |> Kernel.<>("\n")
   end
 
-  defp format_value(value) when is_binary(value), do: inspect(value)
-  defp format_value(value) when is_atom(value), do: inspect(value)
-  defp format_value(value) when is_list(value), do: inspect(value, charlists: :as_lists)
-  defp format_value(value) when is_map(value), do: inspect(value, charlists: :as_lists)
-  defp format_value(value), do: inspect(value)
+  defp normalize_event(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_event(value), do: to_string(value)
+
+  defp normalize_value(value) when is_boolean(value), do: value
+  defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_value(value) when is_list(value) do
+    if Keyword.keyword?(value) do
+      Enum.into(value, %{}, fn {key, nested_value} ->
+        {to_string(key), normalize_value(nested_value)}
+      end)
+    else
+      Enum.map(value, &normalize_value/1)
+    end
+  end
+
+  defp normalize_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {to_string(key), normalize_value(nested_value)}
+    end)
+  end
+
+  defp normalize_value(value), do: value
 end

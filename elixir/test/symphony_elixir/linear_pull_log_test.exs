@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.LinearPullLogTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.{Tracker, Workflow}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Tracker, Workflow}
 
   setup do
     previous_log_path = Application.get_env(:symphony_elixir, :linear_pull_log_file)
@@ -14,7 +14,7 @@ defmodule SymphonyElixir.LinearPullLogTest do
         "symphony-elixir-linear-pull-log-#{System.unique_integer([:positive])}"
       )
 
-    log_path = Path.join(test_root, "log/linear-pull.log")
+    log_path = Path.join(test_root, "log/linear-pull.jsonl")
     Application.put_env(:symphony_elixir, :linear_pull_log_file, log_path)
 
     on_exit(fn ->
@@ -49,16 +49,12 @@ defmodule SymphonyElixir.LinearPullLogTest do
     assert_receive {:linear_request, payload, _headers}
     assert get_in(payload, ["variables", :projectSlug]) == "project"
 
-    contents = File.read!(log_path)
-    assert contents =~ ~s(event="fetch_start")
-    assert contents =~ ~s(operation="candidate_issues")
-    assert contents =~ ~s(states=["Todo", "In Progress"])
-    assert contents =~ ~s(event="page_fetch_start")
-    assert contents =~ ~s(page=1)
-    assert contents =~ ~s(event="page_fetch_result")
-    assert contents =~ ~s(issue_identifiers=["MT-1"])
-    assert contents =~ ~s(event="fetch_success")
-    assert contents =~ ~s(issue_count=1)
+    entries = read_entries(log_path)
+    assert Enum.any?(entries, &(&1["event"] == "fetch_start" and &1["operation"] == "candidate_issues"))
+    assert Enum.any?(entries, &(&1["states"] == ["Todo", "In Progress"]))
+    assert Enum.any?(entries, &(&1["event"] == "page_fetch_start" and &1["page"] == 1))
+    assert Enum.any?(entries, &(&1["event"] == "page_fetch_result" and &1["issue_identifiers"] == ["MT-1"]))
+    assert Enum.any?(entries, &(&1["event"] == "fetch_success" and &1["issue_count"] == 1))
   end
 
   test "fetch_issues_by_states logs paginated pages", %{log_path: log_path} do
@@ -78,16 +74,12 @@ defmodule SymphonyElixir.LinearPullLogTest do
     assert {:ok, [%{identifier: "MT-1"}, %{identifier: "MT-2"}]} =
              Client.fetch_issues_by_states(["Todo"])
 
-    contents = File.read!(log_path)
-    assert contents =~ ~s(event="page_fetch_start")
-    assert contents =~ ~s(operation="issues_by_states")
-    assert contents =~ ~s(page=1)
-    assert contents =~ ~s(has_next_page=true)
-    assert contents =~ ~s(next_cursor="cursor-1")
-    assert contents =~ ~s(page=2)
-    assert contents =~ ~s(issue_identifiers=["MT-2"])
-    assert contents =~ ~s(event="fetch_success")
-    assert contents =~ ~s(issue_identifiers=["MT-1", "MT-2"])
+    entries = read_entries(log_path)
+    assert Enum.any?(entries, &(&1["event"] == "page_fetch_start" and &1["operation"] == "issues_by_states" and &1["page"] == 1))
+    assert Enum.any?(entries, &(&1["has_next_page"] == true and &1["next_cursor"] == "cursor-1"))
+    assert Enum.any?(entries, &(&1["event"] == "page_fetch_start" and &1["page"] == 2))
+    assert Enum.any?(entries, &(&1["event"] == "page_fetch_result" and &1["issue_identifiers"] == ["MT-2"]))
+    assert Enum.any?(entries, &(&1["event"] == "fetch_success" and &1["issue_identifiers"] == ["MT-1", "MT-2"]))
   end
 
   test "issue state refresh logs requested ids and returned identifiers", %{log_path: log_path} do
@@ -108,12 +100,10 @@ defmodule SymphonyElixir.LinearPullLogTest do
     assert {:ok, [%{id: "issue-1", identifier: "MT-1"}]} =
              Client.fetch_issue_states_by_ids(["issue-1"])
 
-    contents = File.read!(log_path)
-    assert contents =~ ~s(event="fetch_start")
-    assert contents =~ ~s(issue_ids=["issue-1"])
-    assert contents =~ ~s(operation="issue_states_by_ids")
-    assert contents =~ ~s(event="fetch_success")
-    assert contents =~ ~s(issue_identifiers=["MT-1"])
+    entries = read_entries(log_path)
+    assert Enum.any?(entries, &(&1["event"] == "fetch_start" and &1["issue_ids"] == ["issue-1"]))
+    assert Enum.any?(entries, &(&1["operation"] == "issue_states_by_ids"))
+    assert Enum.any?(entries, &(&1["event"] == "fetch_success" and &1["issue_identifiers"] == ["MT-1"]))
   end
 
   test "candidate issue fetch logs transport failures and HTTP status", %{log_path: log_path} do
@@ -127,11 +117,14 @@ defmodule SymphonyElixir.LinearPullLogTest do
 
     assert {:error, {:linear_api_status, 503}} = Tracker.fetch_candidate_issues()
 
-    contents = File.read!(log_path)
-    assert contents =~ ~s(event="fetch_failure")
-    assert contents =~ ~s(operation="candidate_issues")
-    assert contents =~ ~s(reason=:linear_api_status)
-    assert contents =~ ~s(status=503)
+    entries = read_entries(log_path)
+
+    assert Enum.any?(entries, fn entry ->
+             entry["event"] == "fetch_failure" and
+               entry["operation"] == "candidate_issues" and
+               entry["reason"] == "linear_api_status" and
+               entry["status"] == 503
+           end)
   end
 
   test "state fetch logs graphql error summaries", %{log_path: log_path} do
@@ -151,11 +144,14 @@ defmodule SymphonyElixir.LinearPullLogTest do
     assert {:error, {:linear_graphql_errors, [%{"message" => "Bad filter"}, %{"message" => "Another failure"}]}} =
              Client.fetch_issues_by_states(["Todo"])
 
-    contents = File.read!(log_path)
-    assert contents =~ ~s(event="fetch_failure")
-    assert contents =~ ~s(operation="issues_by_states")
-    assert contents =~ ~s(reason=:linear_graphql_errors)
-    assert contents =~ ~s(graphql_errors=["Bad filter", "Another failure"])
+    entries = read_entries(log_path)
+
+    assert Enum.any?(entries, fn entry ->
+             entry["event"] == "fetch_failure" and
+               entry["operation"] == "issues_by_states" and
+               entry["reason"] == "linear_graphql_errors" and
+               entry["graphql_errors"] == ["Bad filter", "Another failure"]
+           end)
   end
 
   test "viewer lookup is logged when assignee is configured as me", %{log_path: log_path} do
@@ -176,10 +172,24 @@ defmodule SymphonyElixir.LinearPullLogTest do
 
     assert {:ok, [%{identifier: "MT-1"}]} = Tracker.fetch_candidate_issues()
 
-    contents = File.read!(log_path)
-    assert contents =~ ~s(event="viewer_lookup_start" configured_assignee="me")
-    assert contents =~ ~s(event="viewer_lookup_success" configured_assignee="me" viewer_id="usr-123")
-    assert contents =~ ~s(assignee_mode="viewer")
+    entries = read_entries(log_path)
+
+    assert Enum.any?(entries, &(&1["event"] == "viewer_lookup_start" and &1["configured_assignee"] == "me"))
+
+    assert Enum.any?(entries, fn entry ->
+             entry["event"] == "viewer_lookup_success" and
+               entry["configured_assignee"] == "me" and
+               entry["viewer_id"] == "usr-123"
+           end)
+
+    assert Enum.any?(entries, &(&1["assignee_mode"] == "viewer"))
+  end
+
+  defp read_entries(path) do
+    path
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.map(&Jason.decode!/1)
   end
 
   defp install_request_results(results) do

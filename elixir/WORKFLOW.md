@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "your project slug"
+  project_slug: "symphony-1f9073792ee7"
   active_states:
     - Todo
     - In Progress
@@ -19,14 +19,14 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 "your project also here" .
+    git clone --depth 1 https://github.com/MUGENSoftware/symphony.git .
     # if command -v mise >/dev/null 2>&1; then
     #   cd elixir && mise trust && mise exec -- mix deps.get
     # fi
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 2
   max_turns: 10
 claude:
   command: claude
