@@ -25,9 +25,9 @@ defmodule SymphonyElixir.Application do
     :ok = SymphonyElixir.LogFile.configure()
 
     children = [
+      SymphonyElixir.OtelSetup,
       {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-      SymphonyElixir.OtelSetup,
       SymphonyElixir.WorkflowStore,
       SymphonyElixir.Orchestrator,
       SymphonyElixir.HttpServer,

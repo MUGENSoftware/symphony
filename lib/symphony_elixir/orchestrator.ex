@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   use GenServer
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
@@ -675,9 +676,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, metadata) do
     recipient = self()
     resume_session_id = Map.get(metadata, :resume_session_id)
+    otel_ctx = OpenTelemetry.Ctx.get_current()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, resume_session_id: resume_session_id)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             resume_session_id: resume_session_id,
+             otel_ctx: otel_ctx
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
