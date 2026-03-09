@@ -114,7 +114,7 @@ Do not label Prometheus metrics with `issue_identifier`, `session_id`, or `run_i
 
 ### 6.1 Dependencies
 
-Add OTEL and Prometheus dependencies in `elixir/mix.exs`.
+Add OTEL and Prometheus dependencies in `mix.exs`.
 
 Illustrative dependency set:
 
