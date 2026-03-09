@@ -83,20 +83,12 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
     poll_start_ms = System.monotonic_time(:millisecond)
-
-    state =
-      Tracer.with_span :"orchestrator.poll_cycle", %{
-        attributes: %{
-          claude_availability_status: cooldown_status_string(state)
-        }
-      } do
-        dispatched_state = maybe_dispatch(state)
-        emit_orchestrator_gauges(dispatched_state)
-        dispatched_state
-      end
+    state = maybe_dispatch(state)
+    poll_duration_ms = System.monotonic_time(:millisecond) - poll_start_ms
 
     Telemetry.poll_cycle_completed()
-    Telemetry.poll_cycle_duration(System.monotonic_time(:millisecond) - poll_start_ms)
+    Telemetry.poll_cycle_duration(poll_duration_ms)
+    emit_gauges(state)
 
     now_ms = System.monotonic_time(:millisecond)
     next_poll_due_at_ms = now_ms + state.poll_interval_ms
@@ -916,6 +908,7 @@ defmodule SymphonyElixir.Orchestrator do
              end) do
           {:ok, pid} ->
             ref = Process.monitor(pid)
+            Telemetry.issue_dispatched()
 
             Logger.info(
               "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}" <>
@@ -967,7 +960,6 @@ defmodule SymphonyElixir.Orchestrator do
         end
       end
 
-    emit_gauges(state)
     state
   end
 
