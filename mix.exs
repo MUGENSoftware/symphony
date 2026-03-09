@@ -22,6 +22,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Claude.Cli,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
+          SymphonyElixir.OtelSetup,
           SymphonyElixir.Workspace,
           SymphonyElixir.Web.DashboardLive,
           SymphonyElixir.Web.Assets,

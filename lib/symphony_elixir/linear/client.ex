@@ -27,6 +27,22 @@ defmodule SymphonyElixir.Linear.Client do
         assignee {
           id
         }
+        parent {
+          id
+          identifier
+          state {
+            name
+          }
+        }
+        children(first: $relationFirst) {
+          nodes {
+            id
+            identifier
+            state {
+              name
+            }
+          }
+        }
         labels {
           nodes {
             name
@@ -71,6 +87,22 @@ defmodule SymphonyElixir.Linear.Client do
         url
         assignee {
           id
+        }
+        parent {
+          id
+          identifier
+          state {
+            name
+          }
+        }
+        children(first: $relationFirst) {
+          nodes {
+            id
+            identifier
+            state {
+              name
+            }
+          }
         }
         labels {
           nodes {
@@ -502,7 +534,9 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
+      parent: extract_parent(issue),
       blocked_by: extract_blockers(issue),
+      sub_issues: extract_sub_issues(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
@@ -669,6 +703,12 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_labels(_), do: []
 
+  defp extract_parent(%{"parent" => parent_issue}) when is_map(parent_issue) do
+    relation_ref_from_issue(parent_issue)
+  end
+
+  defp extract_parent(_), do: nil
+
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})
        when is_list(inverse_relations) do
     inverse_relations
@@ -676,13 +716,7 @@ defmodule SymphonyElixir.Linear.Client do
       %{"type" => relation_type, "issue" => blocker_issue}
       when is_binary(relation_type) and is_map(blocker_issue) ->
         if String.downcase(String.trim(relation_type)) == "blocks" do
-          [
-            %{
-              id: blocker_issue["id"],
-              identifier: blocker_issue["identifier"],
-              state: get_in(blocker_issue, ["state", "name"])
-            }
-          ]
+          [relation_ref_from_issue(blocker_issue)]
         else
           []
         end
@@ -693,6 +727,20 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_blockers(_), do: []
+
+  defp extract_sub_issues(%{"children" => %{"nodes" => child_issues}}) when is_list(child_issues) do
+    Enum.map(child_issues, &relation_ref_from_issue/1)
+  end
+
+  defp extract_sub_issues(_), do: []
+
+  defp relation_ref_from_issue(issue) when is_map(issue) do
+    %{
+      id: issue["id"],
+      identifier: issue["identifier"],
+      state: get_in(issue, ["state", "name"])
+    }
+  end
 
   defp parse_datetime(nil), do: nil
 

@@ -1,55 +1,155 @@
 defmodule SymphonyElixir.OtelSetup do
   @moduledoc """
-  Boot-time OpenTelemetry configuration.
+  Bootstraps OpenTelemetry tracing and Prometheus metrics exporting.
 
-  Configures the OTEL exporter, resource attributes, and attaches
-  telemetry handlers. Runs as a transient worker in the application
-  supervisor to perform one-time setup at startup.
+  Reads runtime environment variables to configure the OTEL exporter and
+  optionally start a Prometheus metrics endpoint. The entire pipeline is
+  gated by `SYMPHONY_OBSERVABILITY_ENABLED` so the application can start
+  normally with no exporter configured.
   """
 
   use GenServer
-
   require Logger
 
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  @service_name "symphony-elixir"
+
+  @doc """
+  Returns `true` when the observability pipeline is enabled via env.
+  """
+  @spec enabled?() :: boolean()
+  def enabled? do
+    System.get_env("SYMPHONY_OBSERVABILITY_ENABLED", "false")
+    |> String.downcase()
+    |> Kernel.in(["true", "1", "yes"])
+  end
+
+  @doc """
+  Child spec used by the application supervisor.
+  """
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(_opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [[]]},
+      type: :worker,
+      restart: :permanent
+    }
+  end
+
+  @spec start_link(keyword()) :: GenServer.on_start() | :ignore
+  def start_link(_opts) do
+    if enabled?() do
+      GenServer.start_link(__MODULE__, [], name: __MODULE__)
+    else
+      :ignore
+    end
   end
 
   @impl true
   def init(_opts) do
-    configure_resource()
-    configure_exporter()
+    configure_resource_attributes()
+    configure_otel_exporter()
+    attach_telemetry_handlers()
+    maybe_start_prometheus()
 
-    Logger.info("OpenTelemetry configured for service=symphony-elixir")
+    Logger.info("OtelSetup initialised",
+      otel_endpoint: otel_endpoint(),
+      otel_protocol: otel_protocol(),
+      prometheus_port: prometheus_port()
+    )
 
     {:ok, %{}, :hibernate}
   end
 
-  defp configure_resource do
-    :application.set_env(:opentelemetry, :resource, [
-      {"service.name", "symphony-elixir"},
+  defp configure_resource_attributes do
+    Application.put_env(:opentelemetry, :resource, [
+      {"service.name", @service_name},
       {"service.version", SymphonyElixir.MixProject.project()[:version] || "0.1.0"}
     ])
   end
 
-  defp configure_exporter do
-    endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT")
-    protocol = System.get_env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+  defp configure_otel_exporter do
+    case otel_endpoint() do
+      nil ->
+        Application.put_env(:opentelemetry, :traces_exporter, :none)
 
-    if endpoint do
-      :application.set_env(:opentelemetry_exporter, :otlp_endpoint, endpoint)
-      :application.set_env(:opentelemetry_exporter, :otlp_protocol, String.to_atom(protocol))
-    else
-      :application.set_env(:opentelemetry, :traces_exporter, :none)
+      endpoint ->
+        Application.put_env(:opentelemetry_exporter, :otlp_endpoint, endpoint)
+        Application.put_env(:opentelemetry_exporter, :otlp_protocol, otel_protocol_atom())
     end
   end
 
-  @doc """
-  Returns true if observability is enabled via environment variable.
-  """
-  @spec enabled?() :: boolean()
-  def enabled? do
-    System.get_env("SYMPHONY_OBSERVABILITY_ENABLED", "true") == "true"
+  defp attach_telemetry_handlers do
+    :telemetry.attach_many(
+      "symphony-otel-handler",
+      telemetry_events(),
+      &handle_telemetry_event/4,
+      %{}
+    )
+  rescue
+    ArgumentError ->
+      :ok
+  end
+
+  @doc false
+  @spec handle_telemetry_event([atom()], map(), map(), map()) :: :ok
+  def handle_telemetry_event(event, measurements, metadata, _config) do
+    Logger.debug("telemetry event",
+      event: Enum.join(event, "."),
+      measurements: inspect(measurements),
+      metadata: inspect(metadata)
+    )
+  end
+
+  defp maybe_start_prometheus do
+    case prometheus_port() do
+      nil ->
+        :ok
+
+      _port ->
+        case Process.whereis(:symphony_prometheus) do
+          nil ->
+            {:ok, _pid} =
+              TelemetryMetricsPrometheus.Core.start_link(
+                metrics: SymphonyElixir.Telemetry.metrics(),
+                name: :symphony_prometheus
+              )
+
+            :ok
+
+          _pid ->
+            :ok
+        end
+    end
+  end
+
+  defp telemetry_events do
+    [
+      [:symphony, :agent_runs, :started],
+      [:symphony, :agent_runs, :completed],
+      [:symphony, :agent_runs, :failed],
+      [:symphony, :orchestrator, :poll],
+      [:symphony, :agent_runner, :run],
+      [:symphony, :linear, :request]
+    ]
+  end
+
+  defp otel_endpoint, do: System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT")
+
+  defp otel_protocol, do: System.get_env("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+
+  defp otel_protocol_atom do
+    case otel_protocol() do
+      "grpc" -> :grpc
+      "http/protobuf" -> :http_protobuf
+      _ -> :http_protobuf
+    end
+  end
+
+  defp prometheus_port do
+    case System.get_env("SYMPHONY_OBSERVABILITY_PROMETHEUS_PORT") do
+      nil -> nil
+      value -> String.to_integer(value)
+    end
   end
 end
