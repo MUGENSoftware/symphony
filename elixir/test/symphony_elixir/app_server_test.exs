@@ -31,7 +31,7 @@ defmodule SymphonyElixir.AppServerTest do
       end)
 
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
       File.mkdir_p!(workspace)
 
       File.write!(claude_binary, """
@@ -72,7 +72,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert log =~ ~s([STREAM_JSON] {"type":"result","session_id":"session-100")
 
       logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-100")
-      assert Enum.any?(logs, &String.ends_with?(&1.path, "latest.log"))
+      assert Enum.any?(logs, &String.ends_with?(&1.path, "latest.jsonl"))
       assert Enum.any?(logs, &(&1.session_id == "session-100"))
     after
       File.rm_rf(test_root)
@@ -101,7 +101,7 @@ defmodule SymphonyElixir.AppServerTest do
         end
       end)
 
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh
@@ -158,7 +158,7 @@ defmodule SymphonyElixir.AppServerTest do
         end
       end)
 
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh
@@ -1479,7 +1479,7 @@ defmodule SymphonyElixir.AppServerTest do
       File.mkdir_p!(workspace)
       System.put_env("PATH", "#{bin_dir}:/usr/bin:/bin")
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh
@@ -1561,7 +1561,7 @@ defmodule SymphonyElixir.AppServerTest do
       System.put_env("PATH", "/usr/bin:/bin")
       System.put_env("HOME", home_dir)
       System.put_env("SYMP_TEST_CLAUDE_TRACE", trace_file)
-      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.log"))
+      Application.put_env(:symphony_elixir, :log_file, Path.join(test_root, "log/symphony.jsonl"))
 
       File.write!(claude_binary, """
       #!/bin/sh

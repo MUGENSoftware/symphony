@@ -70,7 +70,7 @@ The orchestrator is alive, but one of the dispatch preconditions is failing.
 
 ### What To Check
 
-- `log/linear-pull.log` for `fetch_start`, `fetch_success`, or `fetch_failure`
+- `log/linear-pull.jsonl` for `fetch_start`, `fetch_success`, or `fetch_failure`
 - `log/claude.mcp.json` for the generated default Claude MCP config when using the built-in
   stream-json Linear integration path
 - `tracker.kind` is present and supported
@@ -85,7 +85,7 @@ If Linear tools are missing inside Claude:
 - if you rely on the default path, confirm `log/claude.mcp.json` exists and points to `https://mcp.linear.app/mcp`
 - if you set `claude.mcp_config`, confirm the override file exists and contains valid JSON
 
-If `linear-pull.log` shows repeated `fetch_failure` entries:
+If `linear-pull.jsonl` shows repeated `fetch_failure` entries:
 
 - check `reason` and `status` first
 - if `reason=:linear_graphql_errors`, inspect the `graphql_errors` summary in that same line

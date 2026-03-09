@@ -283,7 +283,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     orchestrator_name = Module.concat(__MODULE__, :HttpOrchestrator)
     server_name = Module.concat(__MODULE__, :HttpServer)
     log_root = Path.join(System.tmp_dir!(), "symphony-http-logs-#{System.unique_integer([:positive])}")
-    Application.put_env(:symphony_elixir, :log_file, Path.join(log_root, "log/symphony.log"))
+    Application.put_env(:symphony_elixir, :log_file, Path.join(log_root, "log/symphony.jsonl"))
     {:ok, orchestrator_pid} = Orchestrator.start_link(name: orchestrator_name)
 
     {:ok, server_pid} =

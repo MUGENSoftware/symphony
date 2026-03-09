@@ -34,7 +34,7 @@ defmodule SymphonyElixir.ClaudeMcpConfigTest do
       workspace = Path.join(workspace_root, "MT-301")
       claude_binary = Path.join(test_root, "fake-claude")
       trace_file = Path.join(test_root, "claude-mcp.trace")
-      log_file = Path.join(test_root, "log/symphony.log")
+      log_file = Path.join(test_root, "log/symphony.jsonl")
       previous_trace = System.get_env("SYMP_TEST_CLAUDE_TRACE")
 
       on_exit(fn ->

@@ -41,9 +41,9 @@ This specification is intentionally aligned to the current Elixir implementation
 ### 2.2 Existing Observability Surfaces
 
 - Terminal dashboard: live local state, throughput, retries, cooldowns.
-- Disk log: `log/symphony.log`.
-- Linear pull log: `log/linear-pull.log`.
-- Claude session logs: `log/claude/<issue_identifier>/*.log`.
+- Disk log: `log/symphony.jsonl`.
+- Linear pull log: `log/linear-pull.jsonl`.
+- Claude session logs: `log/claude/<issue_identifier>/*.jsonl`.
 - HTTP dashboard/API: current running/retrying state plus issue-specific session log metadata.
 
 Any telemetry design that ignores or replaces these surfaces is not a fit for this repository.
@@ -274,8 +274,8 @@ Remote structured logging must be additive to existing disk logging.
 
 The following must remain intact:
 
-- `log/symphony.log`
-- `log/linear-pull.log`
+- `log/symphony.jsonl`
+- `log/linear-pull.jsonl`
 - per-issue Claude session logs under `log/claude/...`
 
 ### 8.2 Structured Log Content
@@ -455,7 +455,7 @@ Acceptable options:
 Recommended initial approach:
 
 - keep `SymphonyElixir.LogFile` as-is,
-- ship `log/symphony.log` and `log/linear-pull.log` to Loki with an agent,
+- ship `log/symphony.jsonl` and `log/linear-pull.jsonl` to Loki with an agent,
 - keep Claude session logs local at first,
 - add remote structured session-log metadata before considering full raw-output shipping.
 

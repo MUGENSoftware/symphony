@@ -1,328 +1,156 @@
-# Specification: Secondary LoggerJSON Handler
+# Specification: JSON-Only Logging
 
 ## 1. Executive Summary
 
-Symphony should add a secondary JSON log handler without disrupting the current logging experience.
+Symphony writes operator-facing logs as JSONL only.
 
-Today, the application relies on:
+The supported log artifacts are:
 
-- a rotating local text log for general runtime activity,
-- a dedicated Linear pull log,
-- per-issue Claude session logs persisted on disk.
+- `log/symphony.jsonl` for application lifecycle events,
+- `log/linear-pull.jsonl` for dedicated Linear polling and refresh activity,
+- `log/claude/<issue_identifier>/*.jsonl` for Claude session artifacts, including `latest.jsonl`.
 
-This specification adds a second structured log stream using `LoggerJSON`.
+There is no parallel text lifecycle log and no compatibility alias for the old `*.log` paths.
 
-The immediate goal is local development visibility:
+## 2. Goals
 
-- write newline-delimited JSON logs to a local file,
-- preserve the existing rotating text log,
-- keep the existing Claude session logs unchanged.
+- Make every operator-facing log artifact machine-parseable.
+- Keep the main lifecycle log tail-able as a real `*.jsonl` file.
+- Preserve Claude raw subprocess visibility without falling back to plain text files.
+- Keep `--logs-root` behavior unchanged.
+- Keep the dedicated Linear pull log separate from the main lifecycle log.
 
-The future goal is remote shipping:
+## 3. Main Application Logger
 
-- use the JSON log file or JSON handler output as the source for Loki ingestion.
+### 3.1 File Path
 
-## 2. Why This Change
-
-The current text log is good for humans reading local failures quickly, but it is not ideal for:
-
-- machine parsing,
-- trace/log correlation,
-- future Loki queries,
-- structured filtering by issue, session, or run metadata.
-
-Adding `LoggerJSON` as a secondary handler gives Symphony both:
-
-- human-friendly text logs for local operators,
-- structured JSON logs for local tooling now and Loki later.
-
-## 3. Non-Goals
-
-This specification does not:
-
-- replace the current text log,
-- replace per-issue Claude session logs,
-- send logs to Loki yet,
-- convert every existing log message body into deeply nested JSON payloads,
-- require a full observability stack before local use is valuable.
-
-## 4. Current State
-
-### 4.1 Existing Logging Surfaces
-
-- `log/symphony.log`: main rotating application log.
-- `log/linear-pull.log`: dedicated Linear polling log.
-- `log/claude/<issue_identifier>/*.log`: raw Claude turn output.
-
-### 4.2 Current Logging Behavior
-
-`SymphonyElixir.LogFile` configures a rotating disk handler for the main application log.
-
-That behavior should remain in place.
-
-## 5. Proposed Design
-
-### 5.1 High-Level Design
-
-Add a second logger handler that writes structured JSON logs to a separate rotating file, for
-example:
+The canonical lifecycle log path is:
 
 - `log/symphony.jsonl`
 
-The application will therefore produce two parallel log streams:
+`SymphonyElixir.LogFile.default_log_file/0` and `/1` must resolve to that path.
 
-1. text lifecycle log for operators,
-2. JSON lifecycle log for structured processing.
+### 3.2 Backend
 
-### 5.2 Why A Separate File
+The main logger uses:
 
-A separate JSON file is preferable to replacing the current text log because it:
+- `:logger_std_h`
+- file output
+- `LoggerJSON.Formatters.Basic`
 
-- preserves the current operator workflow,
-- makes rollout lower-risk,
-- allows developers to inspect JSON locally with `tail` and `jq`,
-- creates a clean handoff point for future Loki shipping agents.
+The file must be a real tail-able path, not a wrapped disk-log artifact set with `.idx` and `.siz`
+sidecars.
 
-### 5.3 Output Format
+### 3.3 Rotation
 
-The JSON log file should use one JSON object per line.
+Rotation remains enabled through the existing config knobs:
 
-This format is suitable for:
+- `:log_file`
+- `:log_file_max_bytes`
+- `:log_file_max_files`
 
-- `tail -f log/symphony.jsonl`,
-- piping to `jq`,
-- Promtail or Grafana Alloy file scraping later.
+Rotated archives follow the standard file-rotation pattern from `logger_std_h`, such as:
 
-## 6. Handler Requirements
+- `symphony.jsonl`
+- `symphony.jsonl.0`
+- `symphony.jsonl.1`
 
-### 6.1 Primary Requirement
+## 4. Linear Pull Log
 
-`LoggerJSON` must be configured as a secondary logger handler, not as the only default handler.
+### 4.1 File Path
 
-### 6.2 File and Rotation
+The canonical Linear pull log path is:
 
-The JSON handler must write directly to a rotating local file with bounded disk usage.
+- `log/linear-pull.jsonl`
 
-Recommended defaults:
+`SymphonyElixir.LogFile.default_linear_pull_log_file/0` and `/1` must resolve to that path.
 
-- path: `log/symphony.jsonl`
-- max size: 10 MB
-- retained files: 5
+### 4.2 Record Shape
 
-These defaults should mirror the current text log behavior closely unless there is a reason to
-separate them.
+Each line is one JSON object with:
 
-### 6.3 Failure Isolation
+- `time`
+- `event`
+- the existing non-nil fields flattened at top level
 
-If the JSON handler fails to initialize:
+Example fields include:
 
-- Symphony should still boot,
-- the existing text log should still work,
-- a warning should be emitted if possible.
+- `operation`
+- `states`
+- `issue_ids`
+- `issue_identifiers`
+- `page`
+- `status`
+- `reason`
+- `graphql_errors`
 
-The JSON handler must not become a single point of failure for the application.
+The dedicated Linear pull log remains separate from the main `Logger` output.
 
-## 7. Structured Fields
+## 5. Claude Session Logs
 
-### 7.1 Required Metadata
+### 5.1 File Paths
 
-The JSON stream should carry the same key correlation fields already used by the application:
+Claude session artifacts are stored under:
 
-- `issue_id`
-- `issue_identifier`
+- `log/claude/<issue_identifier>/<timestamp>--<session>.jsonl`
+- `log/claude/<issue_identifier>/latest.jsonl`
+
+Transient capture files may exist during execution, but persisted operator-facing artifacts must be
+JSONL only.
+
+### 5.2 Record Shape
+
+Each line is one JSON object. Two record kinds are supported:
+
+1. Parsed Claude stream messages:
+
+```json
+{"time":"...","kind":"claude_stream","payload":{...},"session_id":"..."}
+```
+
+2. Raw unparseable lines:
+
+```json
+{"time":"...","kind":"raw_line","text":"warning: stderr noise"}
+```
+
+This preserves malformed or non-JSON subprocess output without storing plain text session files.
+
+### 5.3 API Expectations
+
+`SymphonyElixir.Claude.SessionLog.list_issue_logs/1` continues to return:
+
+- `path`
 - `session_id`
+- `updated_at`
+- `tail`
 
-### 7.2 Additional Recommended Metadata
+but the paths now point to `*.jsonl` files.
 
-Add support for the following when present:
+## 6. Logs Root Behavior
 
-- `run_id`
-- `trace_id`
-- `span_id`
-- `module`
-- `function`
-- `line`
-- `pid`
-- `level`
-- `timestamp`
+`--logs-root <path>` relocates:
 
-### 7.3 Message Body
+- `symphony.jsonl`
+- `linear-pull.jsonl`
+- the `claude/` directory
 
-Each record should include:
+in the same way the old text log layout was relocated.
 
-- the human log message,
-- the structured metadata,
-- a normalized timestamp,
-- the severity level.
+## 7. Non-Goals
 
-The existing log message strings should remain stable and readable.
+- Keeping `symphony.log` or `linear-pull.log` as compatibility aliases
+- Duplicating Claude raw output into the main lifecycle log
+- Folding the dedicated Linear pull log into the main lifecycle log
+- Reintroducing a secondary text handler
 
-## 8. File Layout
+## 8. Acceptance Criteria
 
-### 8.1 Main JSON File
+The refactor is complete when:
 
-Add a JSON log file under the same logs root as the existing logs:
-
-- default: `log/symphony.jsonl`
-- with `--logs-root <path>`: `<path>/log/symphony.jsonl` or equivalent path under that root
-
-The exact path should follow the same logs-root relocation semantics as the current text logs.
-
-### 8.2 Claude Session Logs
-
-Do not merge raw Claude turn output into `symphony.jsonl`.
-
-Raw Claude output should remain in `SymphonyElixir.Claude.SessionLog`.
-
-Instead, the JSON lifecycle log should include references such as:
-
-- `issue_identifier`
-- `session_id`
-- `claude_log_path` when available
-
-This keeps the structured log compact while preserving access to the canonical raw artifact.
-
-## 9. Implementation Shape
-
-### 9.1 Dependencies
-
-Add `LoggerJSON` to `elixir/mix.exs`.
-
-Illustrative dependency:
-
-```elixir
-{:logger_json, "~> 7.0"}
-```
-
-### 9.2 `SymphonyElixir.LogFile` Refactor
-
-Refactor `SymphonyElixir.LogFile` so it configures:
-
-1. the existing rotating text handler,
-2. a new rotating JSON handler.
-
-Recommended responsibilities:
-
-- keep path resolution in one place,
-- add `default_json_log_file/0` and `default_json_log_file/1`,
-- teach `set_logs_root/1` to relocate the JSON log too,
-- add a `configure_json_handler/0` path alongside the existing text handler setup,
-- avoid removing the console/default handler in a way that breaks the new dual-handler setup.
-
-### 9.3 Handler Choice
-
-Implementation options are acceptable if they preserve the spec behavior:
-
-1. configure an OTP logger handler whose formatter is `LoggerJSON`,
-2. configure a dedicated file-backed handler for JSON output,
-3. extend `SymphonyElixir.LogFile` with one text handler and one JSON handler.
-
-The important point is not the exact OTP plumbing; it is that Symphony ends up with two persistent
-local file outputs.
-
-### 9.4 Configuration Flags
-
-Add application env for:
-
-- JSON log file path
-- JSON log max bytes
-- JSON log max files
-- JSON handler enabled/disabled
-
-Suggested names:
-
-- `:json_log_file`
-- `:json_log_file_max_bytes`
-- `:json_log_file_max_files`
-- `:json_log_enabled`
-
-The JSON handler should default to enabled in development and normal runtime unless explicitly
-disabled.
-
-## 10. Developer Experience
-
-### 10.1 Local Inspection
-
-Developers should be able to inspect the JSON log locally with:
-
-```bash
-tail -f log/symphony.jsonl
-```
-
-and:
-
-```bash
-tail -f log/symphony.jsonl | jq
-```
-
-### 10.2 Expected Benefits
-
-This should make it easier to:
-
-- filter by `issue_identifier`,
-- inspect logs for one `session_id`,
-- validate future OTEL correlation fields,
-- prepare Grafana/Loki parsing rules before remote shipping is enabled.
-
-## 11. Future Loki Path
-
-This spec is intentionally designed so future Loki shipping is simple.
-
-### 11.1 Planned Future Flow
-
-1. Symphony writes `log/symphony.jsonl`.
-2. A local agent such as Promtail or Grafana Alloy tails that file.
-3. The agent ships records to Loki.
-4. Grafana queries use JSON fields for filtering and correlation.
-
-### 11.2 Future Labels and Parsing
-
-When shipping to Loki later:
-
-- keep high-cardinality identifiers in the JSON body,
-- avoid promoting `issue_identifier` or `session_id` to Loki labels unless carefully justified,
-- prefer structured fields for filtering at query time.
-
-## 12. Rollout Plan
-
-### Phase 1: Local JSON Logging
-
-- add dependency,
-- add secondary JSON handler,
-- add JSON log path resolution,
-- confirm logs are written locally,
-- keep the text log unchanged.
-
-### Phase 2: Correlation Enrichment
-
-- ensure `issue_id`, `issue_identifier`, and `session_id` are consistently attached,
-- add `run_id` if adopted,
-- add `trace_id` and `span_id` later with OTEL integration.
-
-### Phase 3: Loki Shipping
-
-- introduce Promtail or Alloy configuration,
-- ship `symphony.jsonl` to Loki,
-- add Grafana queries/dashboards around the structured fields.
-
-## 13. Acceptance Criteria
-
-This work is complete when:
-
-1. Symphony still writes the existing text log.
-2. Symphony also writes a structured local JSON log file.
-3. `--logs-root` relocates both text and JSON logs consistently.
-4. The JSON file rotates and has bounded disk usage.
-5. Startup does not fail if the JSON handler cannot be attached.
-6. The JSON log contains issue/session correlation metadata when those values are available.
-7. Claude raw turn output remains in per-issue session logs, not duplicated wholesale into the JSON
-   lifecycle log.
-
-## 14. Open Questions
-
-- Should `log/linear-pull.log` also gain a parallel JSON file in this phase, or should that wait for
-  a later follow-up?
-- Should the JSON handler be enabled in all environments by default, or only where file logging is
-  already enabled?
-- Should `claude_log_path` be logged only on turn completion, or also on turn start once the pending
-  path exists?
+1. Symphony writes `log/symphony.jsonl` as the only main lifecycle log.
+2. Symphony writes `log/linear-pull.jsonl` as the only dedicated Linear pull log.
+3. Claude session artifacts are persisted as `*.jsonl`, including `latest.jsonl`.
+4. `--logs-root` relocates all of those outputs consistently.
+5. The main lifecycle logger rotates plain files and does not create `.idx` or `.siz` sidecars.
+6. Malformed Claude output is preserved inside JSON envelope records rather than plain text files.
