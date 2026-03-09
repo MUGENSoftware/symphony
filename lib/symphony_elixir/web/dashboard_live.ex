@@ -60,7 +60,7 @@ defmodule SymphonyElixir.Web.DashboardLive do
                 <tr>
                   <td>{entry["issue_identifier"]}</td>
                   <td>{entry["state"]}</td>
-                  <td>{entry["turn_count"]}</td>
+                  <td>{format_turns(entry["turn_count"], entry["max_turns"])}</td>
                   <td>{get_in(entry, ["tokens", "total_tokens"])}</td>
                   <td class="muted">{entry["last_message"] || "—"}</td>
                 </tr>
@@ -124,6 +124,11 @@ defmodule SymphonyElixir.Web.DashboardLive do
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
+
+  defp format_turns(turn_count, max_turns) when is_integer(max_turns) and max_turns > 0,
+    do: "#{turn_count}/#{max_turns}"
+
+  defp format_turns(turn_count, _max_turns), do: turn_count
 
   defp orchestrator_config do
     orchestrator =

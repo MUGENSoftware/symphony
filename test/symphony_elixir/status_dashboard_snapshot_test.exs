@@ -208,6 +208,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
         claude_total_tokens: 0,
         runtime_seconds: 0,
         turn_count: 1,
+        max_turns: 10,
         last_claude_event: :notification,
         last_claude_message: turn_started_message()
       },

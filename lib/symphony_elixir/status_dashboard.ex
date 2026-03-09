@@ -17,7 +17,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @running_id_width 8
   @running_stage_width 14
   @running_pid_width 8
-  @running_age_width 12
+  @running_age_width 15
   @running_tokens_width 10
   @running_session_width 14
   @running_event_default_width 44
@@ -593,7 +593,8 @@ defmodule SymphonyElixir.StatusDashboard do
     total_tokens = running_entry.claude_total_tokens || 0
     runtime_seconds = running_entry.runtime_seconds || 0
     turn_count = Map.get(running_entry, :turn_count, 0)
-    age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
+    max_turns = Map.get(running_entry, :max_turns)
+    age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count, max_turns), @running_age_width)
     event = running_entry.last_claude_event || "none"
     event_label = format_cell(summarize_message(running_entry.last_claude_message), running_event_width)
 
@@ -708,11 +709,17 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_runtime_seconds(seconds) when is_binary(seconds), do: seconds
   defp format_runtime_seconds(_), do: "0m 0s"
 
-  defp format_runtime_and_turns(seconds, turn_count) when is_integer(turn_count) and turn_count > 0 do
+  defp format_runtime_and_turns(seconds, turn_count, max_turns)
+       when is_integer(turn_count) and turn_count > 0 and is_integer(max_turns) and max_turns > 0 do
+    "#{format_runtime_seconds(seconds)} / #{turn_count}/#{max_turns}"
+  end
+
+  defp format_runtime_and_turns(seconds, turn_count, _max_turns)
+       when is_integer(turn_count) and turn_count > 0 do
     "#{format_runtime_seconds(seconds)} / #{turn_count}"
   end
 
-  defp format_runtime_and_turns(seconds, _turn_count), do: format_runtime_seconds(seconds)
+  defp format_runtime_and_turns(seconds, _turn_count, _max_turns), do: format_runtime_seconds(seconds)
 
   defp format_count(nil), do: "0"
 

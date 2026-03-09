@@ -711,6 +711,7 @@ defmodule SymphonyElixir.Orchestrator do
             claude_last_reported_output_tokens: 0,
             claude_last_reported_total_tokens: 0,
             turn_count: 0,
+            max_turns: Config.agent_max_turns(),
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
           })
@@ -1157,6 +1158,7 @@ defmodule SymphonyElixir.Orchestrator do
           claude_output_tokens: metadata.claude_output_tokens,
           claude_total_tokens: metadata.claude_total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
+          max_turns: Map.get(metadata, :max_turns),
           started_at: metadata.started_at,
           last_claude_timestamp: metadata.last_claude_timestamp,
           last_claude_message: metadata.last_claude_message,

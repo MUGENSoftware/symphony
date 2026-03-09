@@ -107,6 +107,7 @@ defmodule SymphonyElixir.Web.Presenter do
       state: entry.state,
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
+      max_turns: Map.get(entry, :max_turns),
       last_event: entry.last_claude_event,
       last_message: summarize_message(entry.last_claude_message),
       started_at: iso8601(entry.started_at),
@@ -133,6 +134,7 @@ defmodule SymphonyElixir.Web.Presenter do
     %{
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
+      max_turns: Map.get(running, :max_turns),
       state: running.state,
       started_at: iso8601(running.started_at),
       last_event: running.last_claude_event,
