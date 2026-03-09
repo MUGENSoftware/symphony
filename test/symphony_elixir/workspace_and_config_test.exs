@@ -326,7 +326,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "parent" => %{
         "id" => "issue-9",
         "identifier" => "MT-9",
-        "state" => %{"name" => "In Progress"}
+        "state" => %{"name" => "In Progress"},
+        "labels" => %{"nodes" => [%{"name" => "child-mode:serial"}]}
       },
       "children" => %{
         "nodes" => [
@@ -347,6 +348,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue)
 
     assert issue.parent == %{id: "issue-9", identifier: "MT-9", state: "In Progress"}
+    assert issue.child_execution_mode == :serial
 
     assert issue.sub_issues == [
              %{id: "issue-11", identifier: "MT-11", state: "Todo"},
@@ -537,6 +539,152 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "MT-302",
              "MT-307"
            ]
+  end
+
+  test "orchestrator dispatches only one ready child per parent in a poll cycle" do
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    first_ready_child = %Issue{
+      id: "child-first",
+      identifier: "MT-401",
+      title: "First ready child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-1", identifier: "MT-400", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    second_ready_child = %Issue{
+      id: "child-second",
+      identifier: "MT-402",
+      title: "Second ready child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-1", identifier: "MT-400", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    different_parent_child = %Issue{
+      id: "child-third",
+      identifier: "MT-403",
+      title: "Other parent child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-2", identifier: "MT-404", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [second_ready_child, different_parent_child, first_ready_child],
+             state
+           ) == ["MT-401", "MT-403"]
+  end
+
+  test "orchestrator skips siblings when one child of the same parent is already running" do
+    running_issue = %Issue{
+      id: "child-running",
+      identifier: "MT-501",
+      title: "Running child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-5", identifier: "MT-500", state: "In Progress"},
+      blocked_by: []
+    }
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{
+        "child-running" => %{
+          pid: self(),
+          ref: make_ref(),
+          identifier: "MT-501",
+          issue: running_issue,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new(["child-running"]),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    sibling_child = %Issue{
+      id: "child-sibling",
+      identifier: "MT-502",
+      title: "Sibling child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-5", identifier: "MT-500", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    different_parent_child = %Issue{
+      id: "child-other-parent",
+      identifier: "MT-503",
+      title: "Other parent child",
+      state: "Todo",
+      priority: 1,
+      child_execution_mode: :serial,
+      parent: %{id: "parent-6", identifier: "MT-504", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [sibling_child, different_parent_child],
+             state
+           ) == ["MT-503"]
+  end
+
+  test "orchestrator keeps sibling dispatch parallel by default" do
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      claude_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    first_parallel_child = %Issue{
+      id: "child-parallel-1",
+      identifier: "MT-601",
+      title: "Parallel child one",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-7", identifier: "MT-600", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-01 00:00:00Z]
+    }
+
+    second_parallel_child = %Issue{
+      id: "child-parallel-2",
+      identifier: "MT-602",
+      title: "Parallel child two",
+      state: "Todo",
+      priority: 1,
+      parent: %{id: "parent-7", identifier: "MT-600", state: "In Progress"},
+      blocked_by: [],
+      created_at: ~U[2026-01-02 00:00:00Z]
+    }
+
+    assert Orchestrator.choose_issue_identifiers_for_dispatch_for_test(
+             [second_parallel_child, first_parallel_child],
+             state
+           ) == ["MT-601", "MT-602"]
   end
 
   test "todo issue with non-terminal blocker is not dispatch-eligible" do

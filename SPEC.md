@@ -742,6 +742,7 @@ An issue is dispatch-eligible only if all are true:
 - Hierarchy rules pass:
   - Do not dispatch a parent issue while any sub-issue is non-terminal.
   - Do not dispatch a sub-issue whose parent is already terminal.
+  - For parents labeled `child-mode:serial`, dispatch at most one active sub-issue at a time.
 
 Sorting order (stable intent):
 
@@ -1176,6 +1177,7 @@ Additional normalization details:
 - `labels` -> lowercase strings
 - `blocked_by` -> derived from inverse relations where relation type is `blocks`
 - `parent` -> derived from tracker hierarchy metadata when available
+- `child_execution_mode` -> derived from parent labels; `child-mode:serial` opts siblings into serial dispatch, default is `parallel`
 - `sub_issues` -> derived from tracker hierarchy metadata when available
 - `priority` -> integer only (non-integers become null)
 - `created_at` and `updated_at` -> parse ISO-8601 timestamps
@@ -1970,6 +1972,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 - Dispatch sort order is priority then oldest creation time
 - Child-issue dispatch sort prefers ready siblings before blocked siblings at the same priority
+- `child-mode:serial` parents dispatch child issues one at a time
+- Parents without a child-mode label default to parallel child dispatch
 - `Todo` issue with non-terminal blockers is not eligible
 - `Todo` issue with terminal blockers is eligible
 - Parent issue with non-terminal sub-issues is not eligible

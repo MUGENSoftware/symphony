@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Linear.Issue do
     :url,
     :assignee_id,
     :parent,
+    child_execution_mode: :parallel,
     blocked_by: [],
     sub_issues: [],
     labels: [],
@@ -28,6 +29,8 @@ defmodule SymphonyElixir.Linear.Issue do
           state: String.t() | nil
         }
 
+  @type child_execution_mode :: :parallel | :serial
+
   @type t :: %__MODULE__{
           id: String.t() | nil,
           identifier: String.t() | nil,
@@ -39,6 +42,7 @@ defmodule SymphonyElixir.Linear.Issue do
           url: String.t() | nil,
           assignee_id: String.t() | nil,
           parent: relation_ref() | nil,
+          child_execution_mode: child_execution_mode(),
           blocked_by: [relation_ref()],
           sub_issues: [relation_ref()],
           labels: [String.t()],

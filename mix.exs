@@ -48,7 +48,7 @@ defmodule SymphonyElixir.MixProject do
   def application do
     [
       mod: {SymphonyElixir.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger, :inets]
     ]
   end
 
