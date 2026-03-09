@@ -130,7 +130,10 @@ defmodule SymphonyElixir.OtelSetup do
       [:symphony, :agent_runs, :failed],
       [:symphony, :orchestrator, :poll],
       [:symphony, :agent_runner, :run],
-      [:symphony, :linear, :request]
+      [:symphony, :linear, :request],
+      [:symphony, :claude, :turns],
+      [:symphony, :claude, :turn_duration_ms],
+      [:symphony, :claude, :usage_limit_events]
     ]
   end
 
