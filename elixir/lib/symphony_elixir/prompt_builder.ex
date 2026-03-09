@@ -35,41 +35,10 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp git_offload_context(issue, git_setup) do
-    branch_name =
-      case git_setup do
-        %{branch: branch} -> branch
-        _ -> SymphonyElixir.Git.branch_name_for_issue(issue.identifier || "issue")
-      end
-
-    base_branch =
-      case git_setup do
-        %{base_branch: base} -> base
-        _ -> Config.git_base_branch()
-      end
-
-    merge_info =
-      case git_setup do
-        %{merge: :clean} ->
-          "- Base branch merge: clean (up to date with `origin/#{base_branch}`)"
-
-        %{merge: {:conflicts, _output}} ->
-          "- Base branch merge: **CONFLICTS DETECTED** — resolve these before starting your work"
-
-        _ ->
-          "- Base branch merge: status unknown"
-      end
-
-    tools_note =
-      if Config.git_enabled?() do
-        """
-
-        **Available git tools (use these instead of Bash):**
-        - `git_status` — check branch, staged/unstaged files, ahead/behind count
-        - `git_commit` — stage files and create commits with a message
-        """
-      else
-        ""
-      end
+    branch_name = git_branch_name(issue, git_setup)
+    base_branch = git_base_branch(git_setup)
+    merge_info = git_merge_info(git_setup, base_branch)
+    tools_note = git_tools_note()
 
     """
     ## Git Operations — Handled by Infrastructure
@@ -90,6 +59,40 @@ defmodule SymphonyElixir.PromptBuilder do
 
     Do not run the /push, /pull, or /land skills. Focus on the task itself.
     """
+  end
+
+  defp git_branch_name(_issue, %{branch: branch}), do: branch
+
+  defp git_branch_name(issue, _git_setup) do
+    SymphonyElixir.Git.branch_name_for_issue(issue.identifier || "issue")
+  end
+
+  defp git_base_branch(%{base_branch: base}), do: base
+  defp git_base_branch(_git_setup), do: Config.git_base_branch()
+
+  defp git_merge_info(%{merge: :clean}, base_branch) do
+    "- Base branch merge: clean (up to date with `origin/#{base_branch}`)"
+  end
+
+  defp git_merge_info(%{merge: {:conflicts, _output}}, _base_branch) do
+    "- Base branch merge: **CONFLICTS DETECTED** — resolve these before starting your work"
+  end
+
+  defp git_merge_info(_git_setup, _base_branch) do
+    "- Base branch merge: status unknown"
+  end
+
+  defp git_tools_note do
+    if Config.git_enabled?() do
+      """
+
+      **Available git tools (use these instead of Bash):**
+      - `git_status` — check branch, staged/unstaged files, ahead/behind count
+      - `git_commit` — stage files and create commits with a message
+      """
+    else
+      ""
+    end
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)

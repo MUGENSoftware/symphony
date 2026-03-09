@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.LinearPullLogTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.{Tracker, Workflow}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Tracker, Workflow}
 
   setup do
     previous_log_path = Application.get_env(:symphony_elixir, :linear_pull_log_file)

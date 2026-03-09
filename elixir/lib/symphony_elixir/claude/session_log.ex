@@ -76,11 +76,15 @@ defmodule SymphonyElixir.Claude.SessionLog do
 
   defp materialize_jsonl_log(source, destination) do
     with {:ok, contents} <- File.read(source),
-         records <- build_records(contents),
-         :ok <- File.write(destination, Enum.map_join(records, "\n", &Jason.encode!/1) <> trailing_newline(records)),
-         :ok <- File.rm(source) do
-      :ok
+         :ok <- write_jsonl_records(destination, contents) do
+      File.rm(source)
     end
+  end
+
+  defp write_jsonl_records(destination, contents) do
+    records = build_records(contents)
+    encoded = Enum.map_join(records, "\n", &Jason.encode!/1) <> trailing_newline(records)
+    File.write(destination, encoded)
   end
 
   defp promote_latest(final_path, issue_dir) do

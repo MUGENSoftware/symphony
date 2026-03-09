@@ -488,9 +488,8 @@ defmodule SymphonyElixir.Config do
          :ok <- validate_claude_approval_policy(),
          :ok <- validate_claude_thread_sandbox(),
          :ok <- validate_claude_turn_sandbox_policy(),
-         :ok <- require_claude_command(),
-         :ok <- validate_claude_mcp_config() do
-      :ok
+         :ok <- require_claude_command() do
+      validate_claude_mcp_config()
     end
   end
 
@@ -549,21 +548,24 @@ defmodule SymphonyElixir.Config do
   end
 
   defp claude_mode_for_validation(command) when is_binary(command) do
-    try do
-      case OptionParser.split(command) do
-        args when is_list(args) ->
-          if Enum.any?(args, &(&1 == "app-server")) do
-            :app_server
-          else
-            :stream_json
-          end
-
-        _ ->
+    case split_command_for_validation(command) do
+      args when is_list(args) ->
+        if Enum.any?(args, &(&1 == "app-server")) do
+          :app_server
+        else
           :stream_json
-      end
-    rescue
-      _error -> :stream_json
+        end
+
+      _ ->
+        :stream_json
     end
+  end
+
+  defp split_command_for_validation(command) when is_binary(command) do
+    OptionParser.split(command)
+  rescue
+    _error ->
+      []
   end
 
   defp validated_workflow_options do

@@ -79,21 +79,23 @@ defmodule SymphonyElixir.Claude.McpConfig do
   defp validate_user_override(path) do
     expanded = Path.expand(path)
 
-    cond do
-      not File.regular?(expanded) ->
-        {:error, {:claude_mcp_config_not_found, expanded}}
+    if File.regular?(expanded) do
+      case File.read(expanded) do
+        {:ok, contents} ->
+          decode_user_override(contents, expanded)
 
-      true ->
-        case File.read(expanded) do
-          {:ok, contents} ->
-            case Jason.decode(contents) do
-              {:ok, _payload} -> :ok
-              {:error, reason} -> {:error, {:invalid_claude_mcp_config_json, expanded, reason}}
-            end
+        {:error, reason} ->
+          {:error, {:claude_mcp_config_unreadable, expanded, reason}}
+      end
+    else
+      {:error, {:claude_mcp_config_not_found, expanded}}
+    end
+  end
 
-          {:error, reason} ->
-            {:error, {:claude_mcp_config_unreadable, expanded, reason}}
-        end
+  defp decode_user_override(contents, expanded) do
+    case Jason.decode(contents) do
+      {:ok, _payload} -> :ok
+      {:error, reason} -> {:error, {:invalid_claude_mcp_config_json, expanded, reason}}
     end
   end
 

@@ -126,15 +126,13 @@ defmodule SymphonyElixir.Linear.Client do
           {:error, :missing_linear_project_slug}
 
         true ->
-          with {:ok, assignee_filter} <- routing_assignee_filter(),
-               {:ok, issues} <-
-                 do_fetch_by_states(
-                   "candidate_issues",
-                   project_slug,
-                   active_states,
-                   assignee_filter
-                 ) do
-            {:ok, issues}
+          with {:ok, assignee_filter} <- routing_assignee_filter() do
+            do_fetch_by_states(
+              "candidate_issues",
+              project_slug,
+              active_states,
+              assignee_filter
+            )
           end
       end
 
@@ -195,9 +193,8 @@ defmodule SymphonyElixir.Linear.Client do
           {:ok, []}
 
         ids ->
-          with {:ok, assignee_filter} <- routing_assignee_filter(),
-               {:ok, issues} <- do_fetch_issue_states(ids, assignee_filter) do
-            {:ok, issues}
+          with {:ok, assignee_filter} <- routing_assignee_filter() do
+            do_fetch_issue_states(ids, assignee_filter)
           end
       end
 

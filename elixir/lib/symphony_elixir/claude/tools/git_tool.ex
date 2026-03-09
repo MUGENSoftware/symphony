@@ -88,14 +88,12 @@ defmodule SymphonyElixir.Claude.Tools.GitTool do
     message = arguments["message"] || arguments[:message]
     files = arguments["files"] || arguments[:files] || []
 
-    cond do
-      not is_binary(message) or String.trim(message) == "" ->
-        DynamicTool.error_response(%{
-          "error" => %{"message" => "`git_commit` requires a non-empty `message` string."}
-        })
-
-      true ->
-        do_commit(workspace, String.trim(message), files)
+    if is_binary(message) and String.trim(message) != "" do
+      do_commit(workspace, String.trim(message), files)
+    else
+      DynamicTool.error_response(%{
+        "error" => %{"message" => "`git_commit` requires a non-empty `message` string."}
+      })
     end
   end
 
@@ -161,38 +159,11 @@ defmodule SymphonyElixir.Claude.Tools.GitTool do
   # -- git_commit helpers --
 
   defp do_commit(workspace, message, files) do
-    stage_result =
-      if files == [] do
-        run_git(workspace, ["add", "-A"])
-      else
-        run_git(workspace, ["add" | files])
-      end
+    stage_result = run_git(workspace, stage_command(files))
 
     case stage_result do
       {_output, 0} ->
-        case run_git(workspace, ["commit", "-m", message]) do
-          {output, 0} ->
-            DynamicTool.success_response(
-              %{"message" => "Commit created", "output" => String.trim(output)},
-              true
-            )
-
-          {output, status} ->
-            if output =~ "nothing to commit" do
-              DynamicTool.success_response(
-                %{"message" => "Nothing to commit, working tree clean"},
-                true
-              )
-            else
-              DynamicTool.error_response(%{
-                "error" => %{
-                  "message" => "git commit failed",
-                  "status" => status,
-                  "output" => String.trim(output)
-                }
-              })
-            end
-        end
+        commit_changes(workspace, message)
 
       {output, status} ->
         DynamicTool.error_response(%{
@@ -202,6 +173,39 @@ defmodule SymphonyElixir.Claude.Tools.GitTool do
             "output" => String.trim(output)
           }
         })
+    end
+  end
+
+  defp stage_command([]), do: ["add", "-A"]
+  defp stage_command(files), do: ["add" | files]
+
+  defp commit_changes(workspace, message) do
+    case run_git(workspace, ["commit", "-m", message]) do
+      {output, 0} ->
+        DynamicTool.success_response(
+          %{"message" => "Commit created", "output" => String.trim(output)},
+          true
+        )
+
+      {output, status} ->
+        commit_failure_response(output, status)
+    end
+  end
+
+  defp commit_failure_response(output, status) do
+    if is_binary(output) and output =~ "nothing to commit" do
+      DynamicTool.success_response(
+        %{"message" => "Nothing to commit, working tree clean"},
+        true
+      )
+    else
+      DynamicTool.error_response(%{
+        "error" => %{
+          "message" => "git commit failed",
+          "status" => status,
+          "output" => String.trim(output)
+        }
+      })
     end
   end
 
