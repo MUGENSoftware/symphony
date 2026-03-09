@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Claude.UsageLimit do
   @spec parse_result(map(), DateTime.t()) :: {:ok, parsed_usage_limit()} | :no_match | {:error, term()}
   def parse_result(payload, now \\ DateTime.utc_now())
 
+  @spec parse_result(map(), DateTime.t()) :: {:ok, parsed_usage_limit()} | :no_match | {:error, term()}
   def parse_result(%{"type" => "result", "is_error" => true, "result" => message}, %DateTime{} = now)
       when is_binary(message) do
     parse_message(message, now)

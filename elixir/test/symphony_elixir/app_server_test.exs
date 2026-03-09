@@ -129,7 +129,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert {:ok, %{}} = AppServer.run(workspace, "hello", issue)
 
       logs = SymphonyElixir.Claude.SessionLog.list_issue_logs("MT-101")
-      assert length(logs) >= 1
+      assert logs != []
       assert Enum.any?(logs, &String.contains?(&1.tail, "booting stream-json session"))
     after
       File.rm_rf(test_root)

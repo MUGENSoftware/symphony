@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Linear.PullLog do
   @spec log(atom() | String.t(), map() | keyword()) :: :ok
   def log(event, fields \\ %{})
 
+  @spec log(atom() | String.t(), map() | keyword()) :: :ok
   def log(event, fields) when is_list(fields) do
     log(event, Map.new(fields))
   end

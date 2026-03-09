@@ -64,10 +64,13 @@ defmodule SymphonyElixir.LogFileTest do
 
     assert :ok = LogFile.configure()
 
-    Logger.metadata(issue_id: "issue-1", issue_identifier: "MT-1", session_id: "session-1")
-
     Enum.each(1..12, fn index ->
-      Logger.info("json lifecycle message #{index} " <> String.duplicate("x", 40))
+      Logger.info(
+        "json lifecycle message #{index} " <> String.duplicate("x", 40),
+        issue_id: "issue-1",
+        issue_identifier: "MT-1",
+        session_id: "session-1"
+      )
     end)
 
     Logger.flush()

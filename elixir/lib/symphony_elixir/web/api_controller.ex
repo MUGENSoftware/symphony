@@ -7,12 +7,14 @@ defmodule SymphonyElixir.Web.ApiController do
 
   alias SymphonyElixir.Web.Presenter
 
+  @spec state(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def state(conn, _params) do
     {orchestrator, timeout} = orchestrator_config()
     payload = Presenter.state_payload(orchestrator, timeout)
     json(conn, payload)
   end
 
+  @spec refresh(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def refresh(conn, _params) do
     {orchestrator, _timeout} = orchestrator_config()
 
@@ -29,6 +31,7 @@ defmodule SymphonyElixir.Web.ApiController do
     end
   end
 
+  @spec issue(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def issue(conn, %{"issue_identifier" => issue_identifier}) do
     {orchestrator, timeout} = orchestrator_config()
 
@@ -43,12 +46,14 @@ defmodule SymphonyElixir.Web.ApiController do
     end
   end
 
+  @spec method_not_allowed(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def method_not_allowed(conn, _params) do
     conn
     |> put_status(405)
     |> json(%{error: %{code: "method_not_allowed", message: "Method not allowed"}})
   end
 
+  @spec not_found(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def not_found(conn, _params) do
     conn
     |> put_status(404)
