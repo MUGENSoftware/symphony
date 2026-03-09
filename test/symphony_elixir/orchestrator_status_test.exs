@@ -353,6 +353,85 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.claude_totals.total_tokens == 46
   end
 
+  test "orchestrator snapshot counts flat usage map from stream-json result event" do
+    issue_id = "issue-flat-usage-map"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-202B",
+      title: "Flat usage map test",
+      description: "Track tokens from stream-json result usage",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-202B"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :FlatUsageMapOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_claude_message: nil,
+      last_claude_timestamp: nil,
+      last_claude_event: nil,
+      claude_input_tokens: 0,
+      claude_output_tokens: 0,
+      claude_total_tokens: 0,
+      claude_last_reported_input_tokens: 0,
+      claude_last_reported_output_tokens: 0,
+      claude_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    # Simulate a stream-json :turn_completed event with a flat usage map
+    # (no "method" key, no nested "params.tokenUsage.total" path)
+    send(
+      pid,
+      {:claude_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         usage: %{"input_tokens" => 50, "output_tokens" => 20},
+         payload: %{
+           "type" => "result",
+           "session_id" => "session-flat",
+           "usage" => %{"input_tokens" => 50, "output_tokens" => 20}
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.claude_input_tokens == 50
+    assert snapshot_entry.claude_output_tokens == 20
+    assert snapshot_entry.claude_total_tokens == 70
+
+    send(pid, {:DOWN, process_ref, :process, self(), :normal})
+    completed_state = :sys.get_state(pid)
+    assert completed_state.claude_totals.input_tokens == 50
+    assert completed_state.claude_totals.output_tokens == 20
+    assert completed_state.claude_totals.total_tokens == 70
+  end
+
   test "orchestrator snapshot tracks claude token-count cumulative usage payloads" do
     issue_id = "issue-token-count-snapshot"
 

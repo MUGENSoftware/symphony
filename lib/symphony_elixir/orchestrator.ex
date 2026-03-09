@@ -1652,6 +1652,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     Enum.find_value(payloads, &absolute_token_usage_from_payload/1) ||
       Enum.find_value(payloads, &turn_completed_usage_from_payload/1) ||
+      Enum.find_value(payloads, &flat_token_usage_map/1) ||
       %{}
   end
 
@@ -1696,6 +1697,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp turn_completed_usage_from_payload(_payload), do: nil
+
+  defp flat_token_usage_map(payload) when is_map(payload) do
+    if integer_token_map?(payload), do: payload
+  end
+
+  defp flat_token_usage_map(_payload), do: nil
 
   defp rate_limits_from_payload(payload) when is_map(payload) do
     direct = Map.get(payload, "rate_limits") || Map.get(payload, :rate_limits)
