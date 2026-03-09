@@ -696,8 +696,6 @@ defmodule SymphonyElixir.Claude.Cli do
   # ── Event handling ─────────────────────────────────────────────────────
 
   defp handle_stream_line(line, on_message, metadata) do
-    append_stream_log(line)
-
     case Jason.decode(line) do
       {:ok, %{} = payload} ->
         handle_decoded_stream_payload(payload, line, on_message, metadata)
@@ -713,8 +711,6 @@ defmodule SymphonyElixir.Claude.Cli do
         {:continue, metadata}
 
       {:error, _reason} ->
-        log_non_json_stream_line(line)
-
         emit_message(
           on_message,
           :malformed,
@@ -1271,10 +1267,6 @@ defmodule SymphonyElixir.Claude.Cli do
     after
       5_000 -> stop_port(port)
     end
-  end
-
-  defp append_stream_log(line) do
-    Logger.info("[STREAM_JSON] #{line}")
   end
 
   defp finalize_stream_json_log(log_ref, parsed_result) do

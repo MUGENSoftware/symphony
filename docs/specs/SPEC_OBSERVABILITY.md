@@ -41,7 +41,7 @@ This specification is intentionally aligned to the current Elixir implementation
 ### 2.2 Existing Observability Surfaces
 
 - Terminal dashboard: live local state, throughput, retries, cooldowns.
-- Disk log: `log/symphony.jsonl`.
+- Disk log: `log/symphony.jsonl`, emitted by the default `logger_json` file handler.
 - Linear pull log: `log/linear-pull.jsonl`.
 - Claude session logs: `log/claude/<issue_identifier>/*.jsonl`.
 - HTTP dashboard/API: current running/retrying state plus issue-specific session log metadata.
@@ -133,7 +133,9 @@ end
 
 Notes:
 
-- `logger_json` is optional, not foundational.
+- `logger_json` is now foundational to the local logging baseline in this repository.
+- OTEL/log-export work should layer on top of the existing `logger_json` + `SymphonyElixir.LogFile`
+  setup, not replace it.
 - If structured remote log shipping is added, it must coexist with `SymphonyElixir.LogFile`.
 
 ### 6.2 Boot-Time Setup
@@ -297,16 +299,15 @@ Message text should continue following current conventions:
 
 ### 8.3 Claude Output Handling
 
-Do not emit full Claude output bodies into regular application logs by default.
-
-Instead:
-
-- keep full turn output in `SymphonyElixir.Claude.SessionLog`,
-- log references to the persisted file,
+- preserve `SymphonyElixir.Claude.SessionLog` as the source of exact turn output,
+- do not mirror full Claude stream bodies into `log/symphony.jsonl` by default,
+- when adding remote shipping, prefer log references and session-log metadata over duplicating raw
+  Claude bodies into another backend,
 - include session log path or basename in structured metadata when useful,
 - expose that metadata through the issue API and traces.
 
-This avoids exploding Loki volume while preserving exact turn output locally.
+This keeps the lifecycle log focused on application events while preserving exact turn output in the
+per-issue Claude artifacts.
 
 ### 8.4 Recommended Log Correlation
 

@@ -71,7 +71,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert String.contains?(trace, "--output-format stream-json")
       assert String.contains?(trace, "--verbose")
       assert String.contains?(trace, "-p hello")
-      assert log =~ ~s([STREAM_JSON] {"type":"result","session_id":"session-100")
+      refute log =~ ~s([STREAM_JSON] {"type":"result","session_id":"session-100")
 
       logs = SessionLog.list_issue_logs("MT-100")
       assert Enum.any?(logs, &String.ends_with?(&1.path, "latest.jsonl"))
