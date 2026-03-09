@@ -51,7 +51,7 @@
       },
       "targets": [
         {
-          "expr": "symphony_orchestrator_running_agents_value",
+          "expr": "symphony_running_agents_value",
           "legendFormat": "Running Agents",
           "refId": "A"
         }
@@ -90,7 +90,7 @@
       },
       "targets": [
         {
-          "expr": "symphony_orchestrator_retry_queue_depth_value",
+          "expr": "symphony_retry_queue_depth_value",
           "legendFormat": "Retry Queue Depth",
           "refId": "A"
         }
@@ -132,7 +132,7 @@
       },
       "targets": [
         {
-          "expr": "symphony_orchestrator_claude_cooldown_value",
+          "expr": "symphony_claude_cooldown_active_value",
           "legendFormat": "Cooldown",
           "refId": "A"
         }
@@ -170,7 +170,7 @@
       },
       "targets": [
         {
-          "expr": "rate(symphony_orchestrator_issue_dispatch_total[5m])",
+          "expr": "rate(symphony_issue_dispatch_total[5m])",
           "legendFormat": "Dispatch Rate",
           "refId": "A"
         }
@@ -234,17 +234,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(symphony_orchestrator_poll_cycle_duration_ms_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(symphony_poll_cycle_duration_ms_duration_bucket[5m]))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(symphony_orchestrator_poll_cycle_duration_ms_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(symphony_poll_cycle_duration_ms_duration_bucket[5m]))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(symphony_orchestrator_poll_cycle_duration_ms_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(symphony_poll_cycle_duration_ms_duration_bucket[5m]))",
           "legendFormat": "p99",
           "refId": "C"
         }

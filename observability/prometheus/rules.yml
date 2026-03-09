@@ -2,7 +2,7 @@ groups:
   - name: symphony_alerts
     rules:
       - alert: SymphonyRetryStorm
-        expr: increase(symphony_orchestrator_issue_retry_total[10m]) > 5
+        expr: increase(symphony_issue_retry_total[10m]) > 5
         for: 0m
         labels:
           severity: warning
@@ -11,7 +11,7 @@ groups:
           description: "Issue retry count increased by {{ $value }} in the last 10 minutes, indicating repeated worker failures."
 
       - alert: SymphonyProlongedCooldown
-        expr: max_over_time(symphony_orchestrator_claude_cooldown_value[15m]) == 1
+        expr: max_over_time(symphony_claude_cooldown_active_value[15m]) == 1
         for: 0m
         labels:
           severity: warning

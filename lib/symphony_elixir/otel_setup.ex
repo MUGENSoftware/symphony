@@ -115,19 +115,23 @@ defmodule SymphonyElixir.OtelSetup do
   @doc false
   @spec handle_telemetry_event([atom()], map(), map(), map()) :: :ok
   def handle_telemetry_event(event, measurements, metadata, _config) do
-    Logger.debug("telemetry event",
-      event: Enum.join(event, "."),
-      measurements: inspect(measurements),
-      metadata: inspect(metadata)
-    )
+    if telemetry_debug_logging_enabled?() do
+      Logger.debug("telemetry event",
+        event: Enum.join(event, "."),
+        measurements: inspect(measurements),
+        metadata: inspect(metadata)
+      )
+    end
+
+    :ok
   end
 
   defp maybe_start_prometheus do
-    case prometheus_port() do
+    case prometheus_port_config() do
       nil ->
         :ok
 
-      port ->
+      {:ok, port} ->
         case Process.whereis(:symphony_prometheus) do
           nil ->
             {:ok, _pid} =
@@ -142,6 +146,13 @@ defmodule SymphonyElixir.OtelSetup do
           _pid ->
             :ok
         end
+
+      {:error, value} ->
+        Logger.warning("Prometheus endpoint disabled because port is invalid",
+          prometheus_port: value
+        )
+
+        :ok
     end
   end
 
@@ -184,11 +195,28 @@ defmodule SymphonyElixir.OtelSetup do
     end
   end
 
-  defp prometheus_port do
+  defp prometheus_port, do: prometheus_port_value(prometheus_port_config())
+
+  defp prometheus_port_config do
     case System.get_env("SYMPHONY_OBSERVABILITY_PROMETHEUS_PORT") do
-      nil -> nil
-      value -> String.to_integer(value)
+      nil ->
+        nil
+
+      value ->
+        case Integer.parse(value) do
+          {port, ""} when port in 1..65_535 -> {:ok, port}
+          _ -> {:error, value}
+        end
     end
+  end
+
+  defp prometheus_port_value({:ok, port}), do: port
+  defp prometheus_port_value(_value), do: nil
+
+  defp telemetry_debug_logging_enabled? do
+    System.get_env("SYMPHONY_OBSERVABILITY_DEBUG_TELEMETRY", "false")
+    |> String.downcase()
+    |> Kernel.in(["true", "1", "yes"])
   end
 
   defp service_version do
