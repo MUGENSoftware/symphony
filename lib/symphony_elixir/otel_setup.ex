@@ -129,6 +129,12 @@ defmodule SymphonyElixir.OtelSetup do
       [:symphony, :agent_runs, :completed],
       [:symphony, :agent_runs, :failed],
       [:symphony, :orchestrator, :poll],
+      [:symphony, :orchestrator, :poll_cycle],
+      [:symphony, :orchestrator, :issue_dispatch],
+      [:symphony, :orchestrator, :issue_retry],
+      [:symphony, :orchestrator, :running_agents],
+      [:symphony, :orchestrator, :retry_queue_depth],
+      [:symphony, :orchestrator, :claude_cooldown],
       [:symphony, :agent_runner, :run],
       [:symphony, :linear, :request]
     ]

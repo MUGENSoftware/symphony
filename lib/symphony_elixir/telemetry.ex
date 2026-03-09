@@ -12,9 +12,19 @@ defmodule SymphonyElixir.Telemetry do
   @spec metrics() :: [Telemetry.Metrics.t()]
   def metrics do
     [
+      # Agent runner metrics
       Telemetry.Metrics.counter("symphony.agent_runs.started.total"),
       Telemetry.Metrics.counter("symphony.agent_runs.completed.total"),
-      Telemetry.Metrics.counter("symphony.agent_runs.failed.total")
+      Telemetry.Metrics.counter("symphony.agent_runs.failed.total"),
+
+      # Orchestrator metrics
+      Telemetry.Metrics.counter("symphony.orchestrator.poll_cycle.total"),
+      Telemetry.Metrics.distribution("symphony.orchestrator.poll_cycle.duration_ms"),
+      Telemetry.Metrics.counter("symphony.orchestrator.issue_dispatch.total"),
+      Telemetry.Metrics.counter("symphony.orchestrator.issue_retry.total"),
+      Telemetry.Metrics.last_value("symphony.orchestrator.running_agents.value"),
+      Telemetry.Metrics.last_value("symphony.orchestrator.retry_queue_depth.value"),
+      Telemetry.Metrics.last_value("symphony.orchestrator.claude_cooldown.value")
     ]
   end
 
@@ -34,5 +44,45 @@ defmodule SymphonyElixir.Telemetry do
   @spec agent_run_failed(map()) :: :ok
   def agent_run_failed(metadata \\ %{}) do
     :telemetry.execute([:symphony, :agent_runs, :failed], %{total: 1}, metadata)
+  end
+
+  @doc "Emit poll cycle completion with duration."
+  @spec poll_cycle_completed(number()) :: :ok
+  def poll_cycle_completed(duration_ms) do
+    :telemetry.execute(
+      [:symphony, :orchestrator, :poll_cycle],
+      %{total: 1, duration_ms: duration_ms},
+      %{}
+    )
+  end
+
+  @doc "Increment the issue dispatch counter."
+  @spec issue_dispatched(map()) :: :ok
+  def issue_dispatched(metadata \\ %{}) do
+    :telemetry.execute([:symphony, :orchestrator, :issue_dispatch], %{total: 1}, metadata)
+  end
+
+  @doc "Increment the issue retry counter."
+  @spec issue_retried(map()) :: :ok
+  def issue_retried(metadata \\ %{}) do
+    :telemetry.execute([:symphony, :orchestrator, :issue_retry], %{total: 1}, metadata)
+  end
+
+  @doc "Report current running agents gauge."
+  @spec report_running_agents(non_neg_integer()) :: :ok
+  def report_running_agents(count) do
+    :telemetry.execute([:symphony, :orchestrator, :running_agents], %{value: count}, %{})
+  end
+
+  @doc "Report current retry queue depth gauge."
+  @spec report_retry_queue_depth(non_neg_integer()) :: :ok
+  def report_retry_queue_depth(count) do
+    :telemetry.execute([:symphony, :orchestrator, :retry_queue_depth], %{value: count}, %{})
+  end
+
+  @doc "Report Claude cooldown active gauge (1 = active, 0 = inactive)."
+  @spec report_claude_cooldown(0 | 1) :: :ok
+  def report_claude_cooldown(active) do
+    :telemetry.execute([:symphony, :orchestrator, :claude_cooldown], %{value: active}, %{})
   end
 end
