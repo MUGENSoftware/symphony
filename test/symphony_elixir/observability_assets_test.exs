@@ -3,7 +3,7 @@ defmodule SymphonyElixir.ObservabilityAssetsTest do
 
   test "Prometheus alert rules use current metric names" do
     rules =
-      "/Users/john/mugen/symphony-on-claude/observability/prometheus/rules.yml"
+      Path.join(File.cwd!(), "observability/prometheus/rules.yml")
       |> File.read!()
 
     assert rules =~ "symphony_issue_retry_total"
@@ -14,7 +14,7 @@ defmodule SymphonyElixir.ObservabilityAssetsTest do
 
   test "Grafana dashboard uses current metric names" do
     dashboard =
-      "/Users/john/mugen/symphony-on-claude/observability/grafana/dashboards/symphony-runtime-health.json"
+      Path.join(File.cwd!(), "observability/grafana/dashboards/symphony-runtime-health.json")
       |> File.read!()
 
     assert dashboard =~ "symphony_running_agents_value"
