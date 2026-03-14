@@ -11,8 +11,6 @@ defmodule SymphonyElixir.OtelSetup do
   use GenServer
   require Logger
 
-  @service_name "symphony-elixir"
-
   @doc """
   Returns `true` when the observability pipeline is enabled via env.
   """
@@ -47,7 +45,6 @@ defmodule SymphonyElixir.OtelSetup do
 
   @impl true
   def init(_opts) do
-    configure_resource_attributes()
     configure_otel_exporter()
     attach_telemetry_handlers()
     maybe_start_prometheus()
@@ -59,13 +56,6 @@ defmodule SymphonyElixir.OtelSetup do
     )
 
     {:ok, %{}, :hibernate}
-  end
-
-  defp configure_resource_attributes do
-    Application.put_env(:opentelemetry, :resource, [
-      {"service.name", @service_name},
-      {"service.version", service_version()}
-    ])
   end
 
   defp configure_otel_exporter do
@@ -217,13 +207,5 @@ defmodule SymphonyElixir.OtelSetup do
     System.get_env("SYMPHONY_OBSERVABILITY_DEBUG_TELEMETRY", "false")
     |> String.downcase()
     |> Kernel.in(["true", "1", "yes"])
-  end
-
-  defp service_version do
-    case Application.spec(:symphony_elixir, :vsn) do
-      version when is_list(version) -> List.to_string(version)
-      version when is_binary(version) -> version
-      _ -> "0.1.0"
-    end
   end
 end

@@ -12,7 +12,9 @@ services:
       - loki
 
   tempo:
-    image: grafana/tempo:latest
+    # Tempo `latest` now expects the newer Kafka-backed ingest path.
+    # Pin to the last tested single-binary image that matches our local config.
+    image: grafana/tempo:2.7.2
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./tempo.yaml:/etc/tempo.yaml:ro

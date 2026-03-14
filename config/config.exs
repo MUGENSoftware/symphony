@@ -1,5 +1,7 @@
 import Config
 
+project_version = Mix.Project.config()[:version] || "0.1.0"
+
 config :logger, :default_formatter,
   metadata: [
     :issue_id,
@@ -14,4 +16,12 @@ config :logger, :default_formatter,
     :otel_endpoint,
     :otel_protocol,
     :prometheus_port
+  ]
+
+config :opentelemetry,
+  resource: [
+    service: [
+      name: "symphony-elixir",
+      version: project_version
+    ]
   ]

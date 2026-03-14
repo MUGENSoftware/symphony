@@ -20,8 +20,10 @@ exporters:
   prometheusremotewrite:
     endpoint: http://prometheus:9090/api/v1/write
 
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
+  # Current collector builds do not include the legacy `loki` exporter.
+  # Send OTLP logs to Loki's OTLP ingestion endpoint instead.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
 
 service:
   pipelines:
@@ -36,4 +38,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [loki]
+      exporters: [otlphttp/loki]

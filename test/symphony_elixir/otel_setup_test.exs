@@ -5,6 +5,20 @@ defmodule SymphonyElixir.OtelSetupTest do
 
   alias SymphonyElixir.OtelSetup
 
+  test "opentelemetry resource config provides service identity before startup" do
+    resource = Application.fetch_env!(:opentelemetry, :resource)
+    attrs = :otel_resource_app_env.parse(resource)
+
+    expected_version =
+      case Application.spec(:symphony_elixir, :vsn) do
+        version when is_list(version) -> List.to_string(version)
+        version -> to_string(version)
+      end
+
+    assert {<<"service.name">>, <<"symphony-elixir">>} in attrs
+    assert {<<"service.version">>, expected_version} in attrs
+  end
+
   test "http/protobuf OTLP startup ensures inets is running" do
     previous_enabled = System.get_env("SYMPHONY_OBSERVABILITY_ENABLED")
     previous_endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT")
