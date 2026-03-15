@@ -225,6 +225,7 @@ Use these in order:
 
 Related docs:
 
+- [Observability Guide](./observability.md)
 - [Troubleshooting](./troubleshooting.md)
 - [Logging Best Practices](./logging.md)
 - [Claude Code Token Accounting](./token_accounting.md)

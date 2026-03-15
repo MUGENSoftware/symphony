@@ -194,6 +194,54 @@ HTTP routes when enabled:
 - `/api/v1/<issue_identifier>`
 - `/api/v1/refresh`
 
+For the local Grafana and telemetry stack, see [Observability Guide](./observability.md).
+
+## Tempo Shows `unknown_service:erl`
+
+### What This Means
+
+OpenTelemetry emitted spans without the intended `service.name`, so Tempo fell back to the BEAM
+default service identity.
+
+### Where It Lives In Code
+
+- `config/config.exs`
+- `lib/symphony_elixir/otel_setup.ex`
+
+### What To Check
+
+- `./bin/symphony` was rebuilt after recent code or config changes
+- the running Symphony process was restarted after that rebuild
+- you are querying only traces created after the restart
+- `OTEL_SERVICE_NAME=symphony-elixir` is set while validating manually
+
+Important behavior:
+
+- old traces already stored in Tempo keep their old service name
+- querying `unknown_service:erl` will continue to return those older traces
+
+For the step-by-step validation flow, see [Observability Guide](./observability.md).
+
+## Grafana Stack Starts But One Signal Is Missing
+
+### What This Means
+
+The three signal paths are independent:
+
+- traces go through the OTEL collector to Tempo
+- metrics are scraped directly by Prometheus
+- logs are tailed directly by Promtail and pushed to Loki
+
+So a healthy collector does not imply healthy metrics or logs.
+
+### What To Check
+
+- for missing traces: OTLP endpoint, collector health, and Tempo search query
+- for missing metrics: `SYMPHONY_OBSERVABILITY_PROMETHEUS_PORT` and Prometheus targets
+- for missing logs: the repo `log/` directory, Promtail mount, and any custom `--logs-root`
+
+For the full smoke test, queries, and endpoint map, see [Observability Guide](./observability.md).
+
 ## Logs Are Hard To Interpret
 
 ### What This Means

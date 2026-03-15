@@ -145,7 +145,7 @@ Add a new `SymphonyElixir.OtelSetup` child to the application supervisor.
 Responsibilities:
 
 - configure OTEL exporter endpoint/protocol from runtime env,
-- register resource attributes such as `service.name=symphony-elixir`,
+- configure OTEL runtime setup at app startup,
 - attach telemetry handlers,
 - start Prometheus metrics exporter endpoint if enabled.
 
@@ -154,17 +154,19 @@ them.
 
 ### 6.3 Runtime Configuration
 
-This project does not currently use a `config/config.exs` runtime layout for the app's operational
-behavior. Observability config should therefore be described in terms of runtime env and application
-setup, for example:
+Observability config is split between static app config and runtime env:
+
+- static resource attributes such as `service.name=symphony-elixir` belong in `config/config.exs`
+- runtime OTLP endpoints and Prometheus port wiring belong in env-driven setup
+
+The runtime portion is described by settings such as:
 
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
 - `OTEL_EXPORTER_OTLP_PROTOCOL`
 - `SYMPHONY_OBSERVABILITY_PROMETHEUS_PORT`
 - `SYMPHONY_OBSERVABILITY_ENABLED`
 
-If a static config file is added later, it should remain a thin wrapper around these runtime
-settings.
+`OTEL_SERVICE_NAME` may also be used as an explicit override during manual validation.
 
 ## 7. Trace Design
 

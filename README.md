@@ -49,9 +49,12 @@ mise exec -- mix setup
 mise exec -- mix build
 
 # Run Symphony
-LINEAR_API_KEY=lin_api_xxx \
-  mise exec -- ./bin/symphony \
-  ./WORKFLOW.md
+LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+SYMPHONY_OBSERVABILITY_ENABLED=true \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+SYMPHONY_OBSERVABILITY_PROMETHEUS_PORT=9568 \
+./bin/symphony ./WORKFLOW.md
 ```
 
 To enable the web dashboard, add `--port 4000`.
@@ -75,6 +78,7 @@ See the [Workflow Reference](docs/workflow-reference.md) for the full configurat
 | Guide | Description |
 |-------|-------------|
 | [Getting Started](docs/getting-started.md) | Operator guide for first run and minimal setup |
+| [Observability Guide](docs/observability.md) | Local LGTM stack setup, smoke tests, Grafana usage, and common gotchas |
 | [Architecture Overview](docs/architecture-overview.md) | System components, data flow, and sequence diagrams |
 | [Workflow Reference](docs/workflow-reference.md) | Complete WORKFLOW.md configuration reference |
 | [Code Map](docs/code-map.md) | Module-by-module guide for contributors |

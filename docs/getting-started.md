@@ -152,6 +152,9 @@ If `--port` or `server.port` is set:
   - `/api/v1/<issue_identifier>`
   - `/api/v1/refresh`
 
+If you want the full local telemetry stack with Grafana, Prometheus, Loki, Tempo, and the OTEL
+collector, see [Observability Guide](./observability.md).
+
 ## Recommended First Validation
 
 Use a small Linear project with a single safe issue and confirm:
@@ -163,4 +166,5 @@ Use a small Linear project with a single safe issue and confirm:
 5. Logs and dashboard reflect the active run.
 
 For the full workflow file surface, see [Workflow Reference](./workflow-reference.md). For runtime
-behavior, see [Operations Guide](./operations.md).
+behavior, see [Operations Guide](./operations.md). For local telemetry setup and verification, see
+[Observability Guide](./observability.md).
